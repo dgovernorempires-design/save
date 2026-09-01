@@ -4,8 +4,8 @@ const app = express();
 
 app.use(express.json());
 
-// Secret security token shared between cPanel and Render
-const RENDER_SECRET_TOKEN = process.env.RENDER_SECRET_TOKEN || 'YOUR_RENDER_SECRET_TOKEN';
+// Secret security token shared between cPanel and Render (checking both 'amen' and 'RENDER_SECRET_TOKEN')
+const RENDER_SECRET_TOKEN = process.env.amen || process.env.RENDER_SECRET_TOKEN || '4dd0711225b2f2f36b109557d91af48a';
 const CPANEL_WEBHOOK_CALLBACK = 'https://dgovernorempire.com.ng/aishortvideo/api/webhook.php';
 
 app.post('/process', async (req, res) => {
