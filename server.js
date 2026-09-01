@@ -1,7 +1,11 @@
 const express = require('express');
 const axios = require('axios');
-const app = express();
+const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
 
+const app = express();
 app.use(express.json());
 
 // Secret security token shared between cPanel and Render (checking both 'amen' and 'RENDER_SECRET_TOKEN')
@@ -23,31 +27,63 @@ app.post('/process', async (req, res) => {
     }
 
     // Immediately respond to cPanel to free up the socket connection
-    res.json({ success: true, message: `Job ${job_id} accepted for background processing.` });
+    res.json({ success: true, message: `Job ${job_id} accepted for background rendering.` });
 
-    // Execute background processing asynchronously
+    // Execute real background processing asynchronously
     processMediaJob(job_id, source_target);
 });
 
 async function processMediaJob(jobId, sourceTarget) {
-    console.log(`Starting processing for Job ID: ${jobId} using source: ${sourceTarget}`);
+    console.log(`Starting real processing for Job ID: ${jobId} using source: ${sourceTarget}`);
+    const outputFileName = `clipped_job_${jobId}.mp4`;
+    const outputPath = path.join('/tmp', outputFileName);
 
     try {
         // Step 1: Update cPanel status to 'processing'
         await notifyCPanel(jobId, 'processing');
 
-        // [Insert your FFmpeg / yt-dlp processing logic here]
-        // E.g., downloading the file from sourceTarget, slicing clips, etc.
-        console.log(`Processing media stream from: ${sourceTarget}`);
-        await new Promise(resolve => setTimeout(resolve, 8000)); // Simulating heavy rendering task
+        // Use yt-dlp to download and cut/clip a sample segment (e.g., first 30 seconds)
+        const command = `yt-dlp -f "best[ext=mp4]" --download-sections "*00:00-00:30" -o "${outputPath}" "${sourceTarget}"`;
+        
+        await new Promise((resolve, reject) => {
+            exec(command, (error, stdout, stderr) => {
+                if (error) {
+                    console.error(`Exec error: ${error.message}`);
+                    return reject(error);
+                }
+                resolve(stdout);
+            });
+        });
 
-        // Step 2: Notify cPanel that processing has successfully completed
-        await notifyCPanel(jobId, 'completed');
-        console.log(`Job ID: ${jobId} completed successfully.`);
+        if (!fs.existsSync(outputPath)) {
+            throw new Error('Render failed to generate output file.');
+        }
+
+        console.log(`Rendering complete. Uploading file back to cPanel...`);
+
+        // Step 2: Upload the processed physical file back to cPanel's webhook endpoint
+        const form = new FormData();
+        form.append('job_id', jobId);
+        form.append('status', 'completed');
+        form.append('video_file', fs.createReadStream(outputPath));
+
+        await axios.post(CPANEL_WEBHOOK_CALLBACK, form, {
+            headers: {
+                ...form.getHeaders(),
+                'Authorization': `Bearer ${RENDER_SECRET_TOKEN}`
+            },
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+        });
+
+        // Clean up temp file
+        fs.unlinkSync(outputPath);
+        console.log(`Job ID: ${jobId} successfully completed and synced with cPanel.`);
 
     } catch (error) {
         console.error(`Error processing Job ID ${jobId}:`, error.message);
         await notifyCPanel(jobId, 'failed');
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
     }
 }
 
