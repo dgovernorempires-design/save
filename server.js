@@ -57,7 +57,10 @@ async function notifyCPanel(jobId, status) {
             job_id: jobId,
             status: status
         }, {
-            headers: { 'Content-Type': 'application/json' }
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${RENDER_SECRET_TOKEN}`
+            }
         });
     } catch (err) {
         console.error(`Failed to report status back to cPanel for Job ${jobId}:`, err.message);
