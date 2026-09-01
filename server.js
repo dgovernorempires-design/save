@@ -10,14 +10,21 @@ app.use(express.json());
 
 const RENDER_SECRET_TOKEN = process.env.amen || process.env.RENDER_SECRET_TOKEN || '4dd0711225b2f2f36b109557d91af48a';
 const CPANEL_WEBHOOK_CALLBACK = 'https://dgovernorempire.com.ng/aishortvideo/api/webhook.php';
-
-// Ensure local yt-dlp binary exists in /tmp or root on startup
 const localYtDlpPath = path.join('/tmp', 'yt-dlp');
-if (!fs.existsSync(localYtDlpPath)) {
-    console.log('Downloading yt-dlp binary locally...');
+
+// Ensure yt-dlp binary exists on startup
+function ensureYtDlp(callback) {
+    if (fs.existsSync(localYtDlpPath)) {
+        return callback();
+    }
+    console.log('Downloading yt-dlp binary to /tmp...');
     exec(`curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ${localYtDlpPath} && chmod +x ${localYtDlpPath}`, (err) => {
-        if (err) console.error('Failed to download yt-dlp locally:', err.message);
-        else console.log('yt-dlp binary ready.');
+        if (err) {
+            console.error('Failed to download yt-dlp:', err.message);
+        } else {
+            console.log('yt-dlp successfully downloaded and marked executable.');
+        }
+        callback();
     });
 }
 
@@ -33,20 +40,23 @@ app.post('/process', async (req, res) => {
     }
 
     res.json({ success: true, message: `Job ${job_id} accepted for background rendering.` });
-    processMediaJob(job_id, source_target);
+    
+    // Ensure yt-dlp exists before running the job
+    ensureYtDlp(() => {
+        processMediaJob(job_id, source_target);
+    });
 });
 
 async function processMediaJob(jobId, sourceTarget) {
     console.log(`Starting real processing for Job ID: ${jobId} using source: ${sourceTarget}`);
     const outputFileName = `clipped_job_${jobId}.mp4`;
     const outputPath = path.join('/tmp', outputFileName);
-    const ytDlpBinary = fs.existsSync(localYtDlpPath) ? localYtDlpPath : 'yt-dlp';
 
     try {
         await notifyCPanel(jobId, 'processing');
 
-        // Use the local or global yt-dlp binary to download and clip
-        const command = `${ytDlpBinary} -f "best[ext=mp4]" --download-sections "*00:00-00:30" -o "${outputPath}" "${sourceTarget}"`;
+        // Explicitly point to the local /tmp/yt-dlp binary
+        const command = `${localYtDlpPath} -f "best[ext=mp4]" --download-sections "*00:00-00:30" -o "${outputPath}" "${sourceTarget}"`;
         
         await new Promise((resolve, reject) => {
             exec(command, (error, stdout, stderr) => {
