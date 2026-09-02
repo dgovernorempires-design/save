@@ -1,0 +1,5 @@
+yt-dlp
+google-genai
+openai-whisper
+pillow
+requests
