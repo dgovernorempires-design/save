@@ -1,26 +1,31 @@
 import os
+import sys
 import json
+import subprocess
+import urllib.request
+from PIL import Image, ImageDraw, ImageFont
+import whisper
 import yt_dlp
-from google import genai  # Google GenAI SDK
+from google import genai
 
+# 1. Download Video and Extract Title / Content
 def download_and_transcribe(video_url):
-    print(f"[Worker] Downloading video from: {video_url}")
+    print(f"[PROGRESS: 10%] Downloading video from: {video_url}")
     
-    # 1. Download video & extract audio using yt-dlp
     ydl_opts = {
         'format': 'bestvideo[height<=1080]+bestaudio/best',
         'merge_output_format': 'mp4',
         'outtmpl': 'downloads/source_video.mp4',
     }
     
+    os.makedirs("downloads", exist_ok=True)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
         title = info.get('title', 'Unknown Title')
 
-    print(f"[Worker] Download complete: {title}. Extracting transcript simulation / LLM analysis...")
+    print(f"[PROGRESS: 30%] Download complete: {title}. Analyzing with Gemini AI...")
     
-    # 2. Call Gemini API to find viral moments (Controversial, Motivational, Inspirational)
-    # Note: Pass your full transcript text here derived via Whisper or YouTube auto-subs
+    # 2. Call Gemini API to find viral moments
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     
     prompt = f"""
@@ -40,24 +45,20 @@ def download_and_transcribe(video_url):
         contents=prompt,
     )
     
-    # Parse AI response to get timestamp clips
-    clips_data = json.loads(response.text.strip().replace("```json", "").replace("```", ""))
-    return clips_data
+    try:
+        clean_json = response.text.strip().replace("```json", "").replace("```", "")
+        clips_data = json.loads(clean_json)
+    except Exception as e:
+        print(f"[Worker Error] Failed to parse Gemini JSON: {e}")
+        clips_data = [{"start_sec": 0, "end_sec": 60, "hook_title": "Key Takeaway"}]
+        
+    return "downloads/source_video.mp4", clips_data
 
-if __name__ == "__main__":
-    # Test execution
-    # download_and_transcribe("https://www.youtube.com/watch?v=EXAMPLE")
-    pass
-
-import subprocess
-import os
-
+# 3. Render Clip via FFmpeg
 def render_clip(source_video_path, start_sec, end_sec, output_filename, aspect_ratio="9:16"):
     print(f"[Worker] Processing clip: {start_sec}s to {end_sec}s -> {output_filename}")
     
-    # Define resolution mapping
     if aspect_ratio == "9:16":
-        # 1080x1920 vertical format with smart vertical scaling and cropping to center
         vf_filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
     elif aspect_ratio == "1:1":
         vf_filter = "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080"
@@ -68,7 +69,6 @@ def render_clip(source_video_path, start_sec, end_sec, output_filename, aspect_r
     output_path = os.path.join("outputs", output_filename)
     os.makedirs("outputs", exist_ok=True)
 
-    # FFmpeg command to slice, crop, and re-encode efficiently
     cmd = [
         "ffmpeg", "-y",
         "-ss", str(start_sec),
@@ -82,26 +82,16 @@ def render_clip(source_video_path, start_sec, end_sec, output_filename, aspect_r
         output_path
     ]
 
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"[Worker] Successfully rendered: {output_path}")
-        return output_path
-    except subprocess.CalledProcessError as e:
-        print(f"[Worker Error] FFmpeg failed: {e.stderr.decode()}")
-        return None
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return output_path
 
-import whisper
-import subprocess
-import os
-
+# 4. Generate Subtitles and Burn via Whisper
 def generate_subtitles_and_mix_audio(clip_video_path, audio_output_path):
-    print(f"[Worker] Transcribing clip for word-level captions: {clip_video_path}")
+    print(f"[Worker] Transcribing clip for word-level captions...")
     
-    # 1. Load tiny/base whisper model to get word timings
     model = whisper.load_model("base")
     result = model.transcribe(clip_video_path, word_timestamps=True)
     
-    # 2. Build an Advanced SubStation Alpha (.ass) subtitle content with modern styling (large bold centered text)
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -122,158 +112,98 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         millis = int((seconds % 1) * 1000)
         return f"{hours}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
-    # Extract word segments into subtitle events
     for segment in result.get("segments", []):
         for word_info in segment.get("words", []):
             start_str = format_time(word_info["start"])
             end_str = format_time(word_info["end"])
             word_text = word_info["word"].strip().upper()
-            
-            # Add each highlighted word event to the ASS script
             ass_content += f"Dialogue: 0,{start_str},{end_str},ViralStyle,,0,0,0,,{word_text}\n"
 
     ass_path = clip_video_path.replace(".mp4", ".ass")
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
 
-    print(f"[Worker] Subtitles written. Rendering final video with background music mix...")
-    
-    # 3. Burn subtitles permanently into video and mix background music loop using FFmpeg
-    final_output = audio_output_path
-    bg_music = "background_beat.mp3" # optional background track
-    
-    if os.path.exists(bg_music):
-        # Complex filter: burn subs, lower background music volume to 10%, mix with original speech audio
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", clip_video_path,
-            "-i", bg_music,
-            "-filter_complex",
-            f"[0:v]subtitles={ass_path}[v];[1:a]volume=0.1[bg];[0:a][bg]amix=inputs=2:duration=first[a]",
-            "-map", "[v]",
-            "-map", "[a]",
-            "-c:v", "libx264", "preset", "fast",
-            "-c:a", "aac",
-            final_output
-        ]
-    else:
-        # Just burn subtitles if no background music file is provided
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", clip_video_path,
-            "-vf", f"subtitles={ass_path}",
-            "-c:v", "libx264", "-preset", "fast",
-            "-c:a", "copy",
-            final_output
-        ]
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", clip_video_path,
+        "-vf", f"subtitles={ass_path}",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "copy",
+        audio_output_path
+    ]
 
     subprocess.run(cmd, check=True)
-    print(f"[Worker] Complete captioned short ready: {final_output}")
-    return final_output
+    return audio_output_path
 
-from PIL import Image, ImageDraw, ImageFont
-import os
+# 5. Dispatch Webhook to cPanel Storage
+def send_clips_to_cpanel(job_id, clips_array):
+    webhook_url = os.environ.get("WEBHOOK_URL")
+    if not webhook_url:
+        print("[Webhook Error] WEBHOOK_URL environment variable is missing on Render!")
+        return
 
-def generate_ai_thumbnail(clip_video_path, hook_text, output_thumb_path):
-    print(f"[Worker] Generating high-CTR thumbnail for hook: '{hook_text}'")
-    
-    # 1. Extract a single representative frame from the clip using FFmpeg (e.g., at second 3)
-    frame_path = clip_video_path.replace(".mp4", "_frame.jpg")
-    extract_cmd = [
-        "ffmpeg", "-y",
-        "-ss", "00:00:03",
-        "-i", clip_video_path,
-        "-vframes", "1",
-        frame_path
-    ]
-    os.system(" ".join(extract_cmd))
-
-    if not os.path.exists(frame_path):
-        print("[Worker Error] Failed to extract thumbnail frame.")
-        return None
-
-    # 2. Open image with Pillow and format to 1280x720 standard dimensions
-    img = Image.open(frame_path).convert("RGB")
-    img = img.resize((1280, 720), Image.Resampling.LANCZOS)
-    draw = ImageDraw.Draw(img)
-
-    # 3. Draw a semi-transparent dark gradient banner at the bottom for text readability
-    banner_height = 240
-    shape = [(0, 720 - banner_height), (1280, 720)]
-    draw.rectangle(shape, fill=(0, 0, 0, 200))
-
-    # 4. Add Bold Hook Text Overlay
-    try:
-        # Load a default or custom TTF font if available on the server container
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
-    except IOError:
-        font = ImageFont.load_default()
-
-    # Wrap or position text nicely
-    text_position = (50, 720 - banner_height + 60)
-    
-    # Draw text with outline/stroke effect for maximum visual pop
-    draw.text(text_position, hook_text.upper(), fill=(255, 255, 0), font=font, stroke_width=3, stroke_fill=(0, 0, 0))
-
-    # Save final thumbnail
-    img.save(output_thumb_path, "JPEG", quality=95)
-    print(f"[Worker] Thumbnail created successfully: {output_thumb_path}")
-    
-    # Clean up raw frame
-    if os.path.exists(frame_path):
-        os.remove(frame_path)
-        
-    return output_thumb_path
-
-import requests
-
-def notify_cpanel_webhook(job_id, clips_array):
-    webhook_url = "https://yourdomain.com/webhook.php"
-    headers = {
-        "Content-Type": "application/json",
-        "X-Webhook-Secret": "YOUR_SECURE_WEBHOOK_SECRET"
-    }
+    secret_token = "YOUR_SECURE_WEBHOOK_SECRET" 
     payload = {
         "jobId": job_id,
         "clips": clips_array
     }
-    
-    response = requests.post(webhook_url, json=payload, headers=headers)
-    print(f"[Worker] Webhook sync status: {response.status_code}")
 
-print("[PROGRESS: 10%] Downloading video with yt-dlp...")
-# ... download code ...
+    req = urllib.request.Request(
+        webhook_url, 
+        data=json.dumps(payload).encode('utf-8'),
+        method='POST'
+    )
+    req.add_header('Content-Type', 'application/json')
+    req.add_header('X-Webhook-Secret', secret_token)
 
-print("[PROGRESS: 40%] Analyzing transcript with Gemini AI...")
-# ... AI code ...
+    try:
+        with urllib.request.urlopen(req) as response:
+            res_body = response.read().decode('utf-8')
+            print(f"[Webhook Success]: {res_body}")
+    except Exception as e:
+        print(f"[Webhook Failed]: {str(e)}")
 
-print("[PROGRESS: 70%] Rendering clips and cropping with FFmpeg...")
-# ... FFmpeg code ...
+# Main Execution Flow
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Usage: python3 processor.py <videoUrl> <jobId> [targetRatio]")
+        sys.exit(1)
 
-print("[PROGRESS: 100%] All clips generated successfully!")
+    video_url = sys.argv[1]
+    job_id = sys.argv[2]
+    target_ratio = sys.argv[3] if len(sys.argv) > 3 else "9:16"
 
-import json
-import os
-import urllib.request
+    try:
+        # Step 1: Download & AI Analysis
+        source_video, clips_meta = download_and_transcribe(video_url)
+        
+        print(f"[PROGRESS: 60%] Rendering clips with FFmpeg...")
+        generated_clips = []
+        
+        # Step 2: Loop and process each clip segment
+        for idx, clip in enumerate(clips_meta):
+            clip_filename = f"clip_{idx+1}_{job_id}.mp4"
+            raw_clip_path = render_clip(source_video, clip['start_sec'], clip['end_sec'], clip_filename, target_ratio)
+            
+            print(f"[PROGRESS: 80%] Adding subtitles to clip {idx+1}...")
+            final_clip_path = generate_subtitles_and_mix_audio(raw_clip_path, raw_clip_path.replace(".mp4", "_captioned.mp4"))
+            
+            # Construct public download link pointing to your Render server static folder or bucket
+            render_domain = os.environ.get("RENDER_EXTERNAL_URL", "https://save-l1w3.onrender.com")
+            public_url = f"{render_domain}/outputs/{os.path.basename(final_clip_path)}"
+            
+            generated_clips.append({
+                "title": clip.get('hook_title', f"Viral Clip #{idx+1}"),
+                "url": public_url
+            })
 
-# Example payload of your generated clips
-webhook_data = {
-    "jobId": job_id,
-    "clips": [
-        {"title": "Viral Short #1", "url": "https://your-render-url.onrender.com/downloads/clip_1.mp4"},
-        {"title": "Viral Short #2", "url": "https://your-render-url.onrender.com/downloads/clip_2.mp4"}
-    ]
-}
+        print(f"[PROGRESS: 95%] Syncing completed clips to cPanel storage...")
+        
+        # Step 3: Send back results via Webhook to cPanel
+        send_clips_to_cpanel(job_id, generated_clips)
 
-webhook_url = os.environ.get("WEBHOOK_URL", "https://yourdomain.com/webhook.php")
-secret_token = "YOUR_SECURE_WEBHOOK_SECRET" # Must match the $shared_secret in webhook.php
+        print("[PROGRESS: 100%] All clips generated successfully!")
 
-req = urllib.request.Request(webhook_url, data=json.dumps(webhook_data).encode('utf-8'))
-req.add_header('Content-Type', 'application/json')
-req.add_header('X-Webhook-Secret', secret_token)
-
-try:
-    with urllib.request.urlopen(req) as response:
-        print("[Webhook] Clips successfully synced to cPanel!")
-except Exception as e:
-    print(f"[Webhook Error]: {e}")
+    except Exception as e:
+        print(f"[Worker Fatal Error]: {str(e)}")
+        sys.exit(1)
