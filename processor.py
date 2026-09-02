@@ -89,7 +89,7 @@ def render_clip(source_video_path, start_sec, end_sec, output_filename, aspect_r
 def generate_subtitles_and_mix_audio(clip_video_path, audio_output_path):
     print(f"[Worker] Transcribing clip for word-level captions...")
     
-    model = whisper.load_model("base")
+    model = whisper.load_model("tiny")
     result = model.transcribe(clip_video_path, word_timestamps=True)
     
     ass_content = """[Script Info]
