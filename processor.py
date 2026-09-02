@@ -170,3 +170,57 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     subprocess.run(cmd, check=True)
     print(f"[Worker] Complete captioned short ready: {final_output}")
     return final_output
+
+from PIL import Image, ImageDraw, ImageFont
+import os
+
+def generate_ai_thumbnail(clip_video_path, hook_text, output_thumb_path):
+    print(f"[Worker] Generating high-CTR thumbnail for hook: '{hook_text}'")
+    
+    # 1. Extract a single representative frame from the clip using FFmpeg (e.g., at second 3)
+    frame_path = clip_video_path.replace(".mp4", "_frame.jpg")
+    extract_cmd = [
+        "ffmpeg", "-y",
+        "-ss", "00:00:03",
+        "-i", clip_video_path,
+        "-vframes", "1",
+        frame_path
+    ]
+    os.system(" ".join(extract_cmd))
+
+    if not os.path.exists(frame_path):
+        print("[Worker Error] Failed to extract thumbnail frame.")
+        return None
+
+    # 2. Open image with Pillow and format to 1280x720 standard dimensions
+    img = Image.open(frame_path).convert("RGB")
+    img = img.resize((1280, 720), Image.Resampling.LANCZOS)
+    draw = ImageDraw.Draw(img)
+
+    # 3. Draw a semi-transparent dark gradient banner at the bottom for text readability
+    banner_height = 240
+    shape = [(0, 720 - banner_height), (1280, 720)]
+    draw.rectangle(shape, fill=(0, 0, 0, 200))
+
+    # 4. Add Bold Hook Text Overlay
+    try:
+        # Load a default or custom TTF font if available on the server container
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
+    except IOError:
+        font = ImageFont.load_default()
+
+    # Wrap or position text nicely
+    text_position = (50, 720 - banner_height + 60)
+    
+    # Draw text with outline/stroke effect for maximum visual pop
+    draw.text(text_position, hook_text.upper(), fill=(255, 255, 0), font=font, stroke_width=3, stroke_fill=(0, 0, 0))
+
+    # Save final thumbnail
+    img.save(output_thumb_path, "JPEG", quality=95)
+    print(f"[Worker] Thumbnail created successfully: {output_thumb_path}")
+    
+    # Clean up raw frame
+    if os.path.exists(frame_path):
+        os.remove(frame_path)
+        
+    return output_thumb_path
