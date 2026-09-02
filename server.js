@@ -9,8 +9,42 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Serve generated video outputs statically so links are accessible
-app.use('/outputs', express.static(path.join(__dirname, 'outputs')));
+// Secure Auto-Deleting Download Stream Endpoint
+app.get('/api/download/:filename', (req, res) => {
+    const filename = req.params.filename;
+    const safeFilename = path.basename(filename); // Prevent path traversal attacks
+    const filePath = path.join(__dirname, 'outputs', safeFilename);
+
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'File already downloaded, deleted, or expired.' });
+    }
+
+    // Set headers to trigger a direct browser file download
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('Content-Type', 'video/mp4');
+
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+
+    // Automatically delete the file from Render disk once download finishes or closes
+    fileStream.on('close', () => {
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`[Cleanup] Auto-deleted downloaded file from disk: ${safeFilename}`);
+            }
+        } catch (err) {
+            console.error(`[Cleanup Error]: ${err.message}`);
+        }
+    });
+
+    fileStream.on('error', (err) => {
+        console.error(`[Stream Error]: ${err.message}`);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Download stream failed.' });
+        }
+    });
+});
 
 // In-memory store to track job progress
 const jobStatuses = {};
@@ -81,7 +115,7 @@ app.post('/api/process-video', async (req, res) => {
                         .filter(file => file.includes(jobId))
                         .map((file, index) => ({
                             title: `Viral Short Clip #${index + 1}`,
-                            url: `${req.protocol}://${req.get('host')}/outputs/${file}`
+                            url: `${req.protocol}://${req.get('host')}/api/download/${file}`
                         }));
                 }
 
@@ -123,7 +157,7 @@ app.get('/api/job-status/:jobId', (req, res) => {
                     status: 'completed',
                     clips: matchingFiles.map((file, index) => ({
                         title: `Viral Short Clip #${index + 1}`,
-                        url: `${req.protocol}://${req.get('host')}/outputs/${file}`
+                        url: `${req.protocol}://${req.get('host')}/api/download/${file}`
                     }))
                 };
                 jobStatuses[jobId] = job; // Re-cache in memory
