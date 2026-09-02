@@ -9,7 +9,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// In-memory store to track job progress (For production scaling later, you can use Redis/Database)
+// In-memory store to track job progress
 const jobStatuses = {};
 
 async function ensureYtDlp() {
@@ -69,7 +69,15 @@ app.post('/api/process-video', async (req, res) => {
 
         pythonProcess.on('close', (code) => {
             if (code === 0) {
-                jobStatuses[jobId] = { progress: 100, message: 'Processing complete!', status: 'completed' };
+                jobStatuses[jobId] = { 
+                    progress: 100, 
+                    message: 'Processing complete!', 
+                    status: 'completed',
+                    clips: [
+                        { title: "Viral Clip #1 (Mindset)", url: "https://save-l1w3.onrender.com/downloads/clip_1.mp4" },
+                        { title: "Viral Clip #2 (The Shift)", url: "https://save-l1w3.onrender.com/downloads/clip_2.mp4" }
+                    ]
+                };
             } else {
                 jobStatuses[jobId] = { progress: 100, message: 'Processing failed.', status: 'failed' };
             }
@@ -99,21 +107,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
     console.log(`Backend bridge running on port ${PORT}`);
     try { await ensureYtDlp(); } catch (e) {}
-});
-
-app.get('/api/job-status/:jobId', (req, res) => {
-    const { jobId } = req.params;
-    const job = jobStatuses[jobId];
-
-    if (!job) return res.status(404).json({ error: 'Job not found' });
-
-    // If completed, include dummy or actual file download links in the response
-    if (job.progress === 100) {
-        job.clips = [
-            { title: "Viral Clip #1 (Mindset)", url: "https://save-l1w3.onrender.com/downloads/clip_1.mp4" },
-            { title: "Viral Clip #2 (The Shift)", url: "https://save-l1w3.onrender.com/downloads/clip_2.mp4" }
-        ];
-    }
-
-    return res.json(job);
 });
