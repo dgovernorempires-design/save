@@ -240,3 +240,14 @@ def notify_cpanel_webhook(job_id, clips_array):
     
     response = requests.post(webhook_url, json=payload, headers=headers)
     print(f"[Worker] Webhook sync status: {response.status_code}")
+
+print("[PROGRESS: 10%] Downloading video with yt-dlp...")
+# ... download code ...
+
+print("[PROGRESS: 40%] Analyzing transcript with Gemini AI...")
+# ... AI code ...
+
+print("[PROGRESS: 70%] Rendering clips and cropping with FFmpeg...")
+# ... FFmpeg code ...
+
+print("[PROGRESS: 100%] All clips generated successfully!")
