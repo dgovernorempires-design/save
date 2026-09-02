@@ -9,6 +9,9 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
+// Serve generated video outputs statically so links are accessible
+app.use('/outputs', express.static(path.join(__dirname, 'outputs')));
+
 // In-memory store to track job progress
 const jobStatuses = {};
 
@@ -72,11 +75,7 @@ app.post('/api/process-video', async (req, res) => {
                 jobStatuses[jobId] = { 
                     progress: 100, 
                     message: 'Processing complete!', 
-                    status: 'completed',
-                    clips: [
-                        { title: "Viral Clip #1 (Mindset)", url: "https://save-l1w3.onrender.com/downloads/clip_1.mp4" },
-                        { title: "Viral Clip #2 (The Shift)", url: "https://save-l1w3.onrender.com/downloads/clip_2.mp4" }
-                    ]
+                    status: 'completed'
                 };
             } else {
                 jobStatuses[jobId] = { progress: 100, message: 'Processing failed.', status: 'failed' };
