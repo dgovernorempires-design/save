@@ -72,7 +72,6 @@ app.post('/api/process-video', async (req, res) => {
 
         pythonProcess.on('close', (code) => {
             if (code === 0) {
-                // Automatically scan outputs folder for files belonging to this job
                 const outputDir = path.join(__dirname, 'outputs');
                 let generatedClips = [];
 
@@ -105,13 +104,35 @@ app.post('/api/process-video', async (req, res) => {
     }
 });
 
-// 2. Status Endpoint for frontend polling
+// 2. Status Endpoint with Disk Fallback Recovery
 app.get('/api/job-status/:jobId', (req, res) => {
     const { jobId } = req.params;
-    const job = jobStatuses[jobId];
+    let job = jobStatuses[jobId];
+
+    // If job was wiped from memory due to server restart, check disk storage
+    if (!job) {
+        const outputDir = path.join(__dirname, 'outputs');
+        if (fs.existsSync(outputDir)) {
+            const files = fs.readdirSync(outputDir);
+            const matchingFiles = files.filter(file => file.includes(jobId));
+            
+            if (matchingFiles.length > 0) {
+                job = {
+                    progress: 100,
+                    message: 'Processing complete (Restored from server storage)!',
+                    status: 'completed',
+                    clips: matchingFiles.map((file, index) => ({
+                        title: `Viral Short Clip #${index + 1}`,
+                        url: `${req.protocol}://${req.get('host')}/outputs/${file}`
+                    }))
+                };
+                jobStatuses[jobId] = job; // Re-cache in memory
+            }
+        }
+    }
 
     if (!job) {
-        return res.status(404).json({ error: 'Job not found' });
+        return res.status(404).json({ error: 'Job not found or expired.' });
     }
 
     return res.json(job);
