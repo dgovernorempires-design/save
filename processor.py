@@ -85,7 +85,7 @@ def render_clip(source_video_path, start_sec, end_sec, output_filename, aspect_r
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return output_path
 
-# 4. Generate Subtitles and Burn via Whisper
+# 4. Generate Subtitles and Burn via Whisper (using 'tiny' to prevent memory crashes)
 def generate_subtitles_and_mix_audio(clip_video_path, audio_output_path):
     print(f"[Worker] Transcribing clip for word-level captions...")
     
@@ -188,9 +188,9 @@ if __name__ == "__main__":
             print(f"[PROGRESS: 80%] Adding subtitles to clip {idx+1}...")
             final_clip_path = generate_subtitles_and_mix_audio(raw_clip_path, raw_clip_path.replace(".mp4", "_captioned.mp4"))
             
-            # Construct public download link pointing to your Render server static folder or bucket
+            # Construct public download link pointing to the auto-deleting stream endpoint
             render_domain = os.environ.get("RENDER_EXTERNAL_URL", "https://save-l1w3.onrender.com")
-            public_url = f"{render_domain}/outputs/{os.path.basename(final_clip_path)}"
+            public_url = f"{render_domain}/api/download/{os.path.basename(final_clip_path)}"
             
             generated_clips.append({
                 "title": clip.get('hook_title', f"Viral Clip #{idx+1}"),
