@@ -48,3 +48,44 @@ if __name__ == "__main__":
     # Test execution
     # download_and_transcribe("https://www.youtube.com/watch?v=EXAMPLE")
     pass
+
+import subprocess
+import os
+
+def render_clip(source_video_path, start_sec, end_sec, output_filename, aspect_ratio="9:16"):
+    print(f"[Worker] Processing clip: {start_sec}s to {end_sec}s -> {output_filename}")
+    
+    # Define resolution mapping
+    if aspect_ratio == "9:16":
+        # 1080x1920 vertical format with smart vertical scaling and cropping to center
+        vf_filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+    elif aspect_ratio == "1:1":
+        vf_filter = "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080"
+    else:
+        vf_filter = "scale=1920:1080:force_original_aspect_ratio=decrease"
+
+    duration = end_sec - start_sec
+    output_path = os.path.join("outputs", output_filename)
+    os.makedirs("outputs", exist_ok=True)
+
+    # FFmpeg command to slice, crop, and re-encode efficiently
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start_sec),
+        "-i", source_video_path,
+        "-t", str(duration),
+        "-vf", vf_filter,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        output_path
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(f"[Worker] Successfully rendered: {output_path}")
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"[Worker Error] FFmpeg failed: {e.stderr.decode()}")
+        return None
