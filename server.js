@@ -6,11 +6,12 @@ const path = require('path');
 const https = require('https');
 
 const app = express();
-
 app.use(express.json());
 app.use(cors());
 
-// Helper: Ensure yt-dlp is dynamically downloaded to /tmp for Render environments
+// In-memory store to track job progress (For production scaling later, you can use Redis/Database)
+const jobStatuses = {};
+
 async function ensureYtDlp() {
     const ytDlpPath = path.join('/tmp', 'yt-dlp');
     if (!fs.existsSync(ytDlpPath)) {
@@ -35,48 +36,67 @@ async function ensureYtDlp() {
     return ytDlpPath;
 }
 
-// Endpoint where your cPanel website sends the YouTube link & user settings
+// 1. Endpoint to start processing
 app.post('/api/process-video', async (req, res) => {
     try {
-        const { videoUrl, targetRatio, styleSettings } = req.body;
+        const { videoUrl, targetRatio } = req.body;
+        if (!videoUrl) return res.status(400).json({ error: 'Video URL is required' });
 
-        if (!videoUrl) {
-            return res.status(400).json({ error: 'Video URL is required' });
-        }
-
-        // Generate a unique Job ID
         const jobId = 'job_' + Date.now();
+        jobStatuses[jobId] = { progress: 5, message: 'Initializing job...' };
+        
         console.log(`[Job Queued] ID: ${jobId} | Target: ${videoUrl}`);
-
-        // Ensure yt-dlp is ready before handling job execution
         await ensureYtDlp();
 
-        // Spawn the Python processing worker in the background
-        const pythonProcess = spawn('python3', ['processor.py', videoUrl, jobId, targetRatio || '9:16'], {
-            detached: true,
-            stdio: 'ignore'
-        });
-        pythonProcess.unref();
+        // Spawn Python worker
+        const pythonProcess = spawn('python3', ['processor.py', videoUrl, jobId, targetRatio || '9:16']);
 
-        return res.status(202).json({
-            success: true,
-            message: 'Video processing started successfully in the background!',
-            jobId: jobId,
-            statusEndpoint: `/api/job-status/${jobId}`
+        pythonProcess.stdout.on('data', (data) => {
+            const output = data.toString().trim();
+            console.log(`[Python ${jobId}]: ${output}`);
+
+            // Look for progress tags sent by python e.g. [PROGRESS: 45%]
+            const match = output.match(/\[PROGRESS:\s*(\d+)%\]/);
+            if (match) {
+                const percent = parseInt(match[1]);
+                jobStatuses[jobId] = { progress: percent, message: output };
+            }
         });
+
+        pythonProcess.stderr.on('data', (data) => {
+            console.error(`[Python Error ${jobId}]: ${data.toString().trim()}`);
+        });
+
+        pythonProcess.on('close', (code) => {
+            if (code === 0) {
+                jobStatuses[jobId] = { progress: 100, message: 'Processing complete!', status: 'completed' };
+            } else {
+                jobStatuses[jobId] = { progress: 100, message: 'Processing failed.', status: 'failed' };
+            }
+        });
+
+        return res.status(202).json({ success: true, jobId: jobId });
 
     } catch (error) {
         console.error('Queue Error:', error);
-        return res.status(500).json({ error: 'Internal server error: ' + error.message });
+        return res.status(500).json({ error: error.message });
     }
+});
+
+// 2. Status Endpoint for frontend polling
+app.get('/api/job-status/:jobId', (req, res) => {
+    const { jobId } = req.params;
+    const job = jobStatuses[jobId];
+
+    if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+    }
+
+    return res.json(job);
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
     console.log(`Backend bridge running on port ${PORT}`);
-    try {
-        await ensureYtDlp();
-    } catch (e) {
-        console.error('Startup yt-dlp initialization warning:', e.message);
-    }
+    try { await ensureYtDlp(); } catch (e) {}
 });
