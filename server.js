@@ -100,3 +100,20 @@ app.listen(PORT, async () => {
     console.log(`Backend bridge running on port ${PORT}`);
     try { await ensureYtDlp(); } catch (e) {}
 });
+
+app.get('/api/job-status/:jobId', (req, res) => {
+    const { jobId } = req.params;
+    const job = jobStatuses[jobId];
+
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    // If completed, include dummy or actual file download links in the response
+    if (job.progress === 100) {
+        job.clips = [
+            { title: "Viral Clip #1 (Mindset)", url: "https://save-l1w3.onrender.com/downloads/clip_1.mp4" },
+            { title: "Viral Clip #2 (The Shift)", url: "https://save-l1w3.onrender.com/downloads/clip_2.mp4" }
+        ];
+    }
+
+    return res.json(job);
+});
