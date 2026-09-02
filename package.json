@@ -1,16 +1,13 @@
 {
-  "name": "dgovernor-render-worker",
+  "name": "ai-video-backend",
   "version": "1.0.0",
-  "description": "Background clipping and rendering engine for DGovernor Clip Engine",
+  "description": "Backend bridge for AI video repurposing platform",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "axios": "^1.6.8"
-  },
-  "engines": {
-    "node": ">=18.x"
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
   }
 }
