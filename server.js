@@ -149,8 +149,9 @@ app.post('/api/process-video', async (req, res) => {
 
                 if (fs.existsSync(outputDir)) {
                     const files = fs.readdirSync(outputDir);
+                    // Explicitly filter for captioned files to prevent mismatch errors
                     generatedClips = files
-                        .filter(file => file.includes(jobId))
+                        .filter(file => file.includes(jobId) && file.endsWith('_captioned.mp4'))
                         .map((file, index) => ({
                             title: `Viral Short Clip #${index + 1}`,
                             url: `${req.protocol}://${req.get('host')}/api/download/${file}`
@@ -189,7 +190,7 @@ app.get('/api/job-status/:jobId', (req, res) => {
         const outputDir = path.join(__dirname, 'outputs');
         if (fs.existsSync(outputDir)) {
             const files = fs.readdirSync(outputDir);
-            const matchingFiles = files.filter(file => file.includes(jobId));
+            const matchingFiles = files.filter(file => file.includes(jobId) && file.endsWith('_captioned.mp4'));
             
             if (matchingFiles.length > 0) {
                 job = {
