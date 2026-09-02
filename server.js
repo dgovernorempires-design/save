@@ -4,10 +4,48 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const http = require('http');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// Configuration for your cPanel Webhook Archive Sync
+const CPANEL_WEBHOOK_URL = 'https://yourdomain.com/webhook.php'; // Replace with your actual cPanel webhook URL
+const WEBHOOK_SECRET = 'YOUR_SECURE_WEBHOOK_SECRET'; // Must match the secret in webhook.php
+
+// Helper function to sync completed clips to cPanel
+function syncToCpanelWebhook(jobId, clips) {
+    if (!CPANEL_WEBHOOK_URL.includes('yourdomain.com')) {
+        const data = JSON.stringify({ jobId, clips });
+        const urlObj = new URL(CPANEL_WEBHOOK_URL);
+        const lib = urlObj.protocol === 'https:' ? https : http;
+
+        const reqOptions = {
+            hostname: urlObj.hostname,
+            path: urlObj.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Webhook-Secret': WEBHOOK_SECRET,
+                'Content-Length': Buffer.byteLength(data)
+            }
+        };
+
+        const req = lib.request(reqOptions, (res) => {
+            let responseBody = '';
+            res.on('data', chunk => responseBody += chunk);
+            res.on('end', () => console.log(`[cPanel Sync] Job ${jobId} synced: ${responseBody}`));
+        });
+
+        req.on('error', (err) => {
+            console.error(`[cPanel Sync Error] Failed to push job ${jobId}: ${err.message}`);
+        });
+
+        req.write(data);
+        req.end();
+    }
+}
 
 // Secure Auto-Deleting Download Stream Endpoint
 app.get('/api/download/:filename', (req, res) => {
@@ -118,6 +156,9 @@ app.post('/api/process-video', async (req, res) => {
                             url: `${req.protocol}://${req.get('host')}/api/download/${file}`
                         }));
                 }
+
+                // Push completed job payload to your cPanel archive automatically
+                syncToCpanelWebhook(jobId, generatedClips);
 
                 jobStatuses[jobId] = { 
                     progress: 100, 
