@@ -251,3 +251,29 @@ print("[PROGRESS: 70%] Rendering clips and cropping with FFmpeg...")
 # ... FFmpeg code ...
 
 print("[PROGRESS: 100%] All clips generated successfully!")
+
+import json
+import os
+import urllib.request
+
+# Example payload of your generated clips
+webhook_data = {
+    "jobId": job_id,
+    "clips": [
+        {"title": "Viral Short #1", "url": "https://your-render-url.onrender.com/downloads/clip_1.mp4"},
+        {"title": "Viral Short #2", "url": "https://your-render-url.onrender.com/downloads/clip_2.mp4"}
+    ]
+}
+
+webhook_url = os.environ.get("WEBHOOK_URL", "https://yourdomain.com/webhook.php")
+secret_token = "YOUR_SECURE_WEBHOOK_SECRET" # Must match the $shared_secret in webhook.php
+
+req = urllib.request.Request(webhook_url, data=json.dumps(webhook_data).encode('utf-8'))
+req.add_header('Content-Type', 'application/json')
+req.add_header('X-Webhook-Secret', secret_token)
+
+try:
+    with urllib.request.urlopen(req) as response:
+        print("[Webhook] Clips successfully synced to cPanel!")
+except Exception as e:
+    print(f"[Webhook Error]: {e}")
