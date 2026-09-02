@@ -72,10 +72,25 @@ app.post('/api/process-video', async (req, res) => {
 
         pythonProcess.on('close', (code) => {
             if (code === 0) {
+                // Automatically scan outputs folder for files belonging to this job
+                const outputDir = path.join(__dirname, 'outputs');
+                let generatedClips = [];
+
+                if (fs.existsSync(outputDir)) {
+                    const files = fs.readdirSync(outputDir);
+                    generatedClips = files
+                        .filter(file => file.includes(jobId))
+                        .map((file, index) => ({
+                            title: `Viral Short Clip #${index + 1}`,
+                            url: `${req.protocol}://${req.get('host')}/outputs/${file}`
+                        }));
+                }
+
                 jobStatuses[jobId] = { 
                     progress: 100, 
                     message: 'Processing complete!', 
-                    status: 'completed'
+                    status: 'completed',
+                    clips: generatedClips
                 };
             } else {
                 jobStatuses[jobId] = { progress: 100, message: 'Processing failed.', status: 'failed' };
