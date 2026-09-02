@@ -224,3 +224,19 @@ def generate_ai_thumbnail(clip_video_path, hook_text, output_thumb_path):
         os.remove(frame_path)
         
     return output_thumb_path
+
+import requests
+
+def notify_cpanel_webhook(job_id, clips_array):
+    webhook_url = "https://yourdomain.com/webhook.php"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": "YOUR_SECURE_WEBHOOK_SECRET"
+    }
+    payload = {
+        "jobId": job_id,
+        "clips": clips_array
+    }
+    
+    response = requests.post(webhook_url, json=payload, headers=headers)
+    print(f"[Worker] Webhook sync status: {response.status_code}")
