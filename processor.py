@@ -3,40 +3,61 @@ import sys
 import json
 import subprocess
 import urllib.request
+import urllib.parse
 from PIL import Image, ImageDraw, ImageFont
 import whisper
 import yt_dlp
 from google import genai
 
-# 1. Download Video and Extract Title / Content
+# 1. Download Video and Transcribe Once
 def download_and_transcribe(video_url):
-    print(f"[PROGRESS: 10%] Downloading video from: {video_url}")
+    print(f"[PROGRESS: 10%] Downloading video source via yt-dlp...")
     
     ydl_opts = {
-        'format': 'bestvideo[height<=1080]+bestaudio/best',
+        'format': 'bestvideo[height<=720]+bestaudio/best', # Capped at 720p to save RAM & CPU
         'merge_output_format': 'mp4',
         'outtmpl': 'downloads/source_video.mp4',
+        'max_filesize': 200 * 1024 * 1024, # Limit to 200MB to protect server limits
     }
     
     os.makedirs("downloads", exist_ok=True)
+    os.makedirs("outputs", exist_ok=True)
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
         title = info.get('title', 'Unknown Title')
 
-    print(f"[PROGRESS: 30%] Download complete: {title}. Analyzing with Gemini AI...")
+    print(f"[PROGRESS: 35%] Loading Whisper model (tiny) to transcribe audio once...")
+    # Using 'tiny' model strictly to prevent OOM crashes on Render's 512MB RAM
+    model = whisper.load_model("tiny")
+    result = model.transcribe("downloads/source_video.mp4", word_timestamps=True)
     
-    # 2. Call Gemini API to find viral moments
+    # Unload Whisper model explicitly to free up RAM immediately
+    del model
+    import gc
+    gc.collect()
+
+    print(f"[PROGRESS: 50%] Transcription complete. Analyzing transcript with Gemini AI...")
+    return "downloads/source_video.mp4", title, result
+
+# 2. Analyze Transcript with Gemini
+def analyze_transcript_with_gemini(title, transcript_result):
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     
+    # Extract readable text summary/segments from transcript to keep token payload manageable
+    full_text = " ".join([seg.get("text", "") for seg in transcript_result.get("segments", [])])
+    truncated_text = full_text[:12000] # Safe token limit window
+
     prompt = f"""
-    Analyze this video title and context: '{title}'. 
-    You are an expert short-form content creator. Identify 3 to 5 high-impact, 
-    attention-grabbing segments (30 to 90 seconds long) that are motivational, 
-    controversial, or inspirational.
+    Video Title: '{title}'
+    Transcript snippet: "{truncated_text}"
+
+    You are an expert short-form content creator. Identify 3 to 4 high-impact, 
+    attention-grabbing segments (30 to 60 seconds long) based on the actual spoken transcript.
     
     Return ONLY a valid JSON array of objects with start_sec, end_sec, and hook_title:
     [
-      {{"start_sec": 120, "end_sec": 185, "hook_title": "The Mindset Shift"}}
+      {{"start_sec": 45, "end_sec": 95, "hook_title": "The Core Breakthrough"}}
     ]
     """
     
@@ -50,48 +71,42 @@ def download_and_transcribe(video_url):
         clips_data = json.loads(clean_json)
     except Exception as e:
         print(f"[Worker Error] Failed to parse Gemini JSON: {e}")
-        clips_data = [{"start_sec": 0, "end_sec": 60, "hook_title": "Key Takeaway"}]
+        clips_data = [{"start_sec": 0, "end_sec": 45, "hook_title": "Key Highlight"}]
         
-    return "downloads/source_video.mp4", clips_data
+    return clips_data
 
-# 3. Render Clip via FFmpeg
-def render_clip(source_video_path, start_sec, end_sec, output_filename, aspect_ratio="9:16"):
-    print(f"[Worker] Processing clip: {start_sec}s to {end_sec}s -> {output_filename}")
+# 3. Render Clip via FFmpeg & Burn Subtitles
+def render_and_caption_clip(source_video_path, clip_meta, idx, job_id, target_ratio, full_transcript):
+    start_sec = clip_meta['start_sec']
+    end_sec = clip_meta['end_sec']
+    duration = end_sec - start_sec
     
-    if aspect_ratio == "9:16":
+    print(f"[PROGRESS: {60 + (idx * 10)}%] Processing clip {idx+1}: {start_sec}s - {end_sec}s")
+
+    if target_ratio == "9:16":
         vf_filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
-    elif aspect_ratio == "1:1":
+    elif target_ratio == "1:1":
         vf_filter = "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080"
     else:
         vf_filter = "scale=1920:1080:force_original_aspect_ratio=decrease"
 
-    duration = end_sec - start_sec
-    output_path = os.path.join("outputs", output_filename)
-    os.makedirs("outputs", exist_ok=True)
+    raw_output = f"outputs/raw_clip_{idx+1}_{job_id}.mp4"
+    final_output = f"outputs/clip_{idx+1}_{job_id}_captioned.mp4"
 
-    cmd = [
+    # Step A: Cut specific clip section with FFmpeg
+    cmd_cut = [
         "ffmpeg", "-y",
         "-ss", str(start_sec),
         "-i", source_video_path,
         "-t", str(duration),
         "-vf", vf_filter,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        output_path
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", # Ultrafast preset to minimize CPU/RAM strain
+        "-c:a", "aac", "-b:a", "96k",
+        raw_output
     ]
+    subprocess.run(cmd_cut, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return output_path
-
-# 4. Generate Subtitles and Burn via Whisper (using 'tiny' to prevent memory crashes)
-def generate_subtitles_and_mix_audio(clip_video_path, audio_output_path):
-    print(f"[Worker] Transcribing clip for word-level captions...")
-    
-    model = whisper.load_model("tiny")
-    result = model.transcribe(clip_video_path, word_timestamps=True)
-    
+    # Step B: Filter word timestamps specifically for this clip's time range & generate ASS subtitles
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -99,69 +114,86 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralStyle,Arial,70,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,10,10,250,1
+Style: ViralStyle,Arial,75,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,10,10,250,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     def format_time(seconds):
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millis = int((seconds % 1) * 1000)
-        return f"{hours}:{minutes:02d}:{secs:02d}.{millis:03d}"
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h}:{m:02d}:{s:02d}.{ms:03d}"
 
-    for segment in result.get("segments", []):
-        for word_info in segment.get("words", []):
-            start_str = format_time(word_info["start"])
-            end_str = format_time(word_info["end"])
-            word_text = word_info["word"].strip().upper()
-            ass_content += f"Dialogue: 0,{start_str},{end_str},ViralStyle,,0,0,0,,{word_text}\n"
+    for segment in full_transcript.get("segments", []):
+        for w in segment.get("words", []):
+            w_start = w["start"]
+            w_end = w["end"]
+            # Check if word falls within this clip's time window
+            if w_start >= start_sec and w_end <= end_sec:
+                rel_start = w_start - start_sec
+                rel_end = w_end - start_sec
+                word_text = w["word"].strip().upper()
+                ass_content += f"Dialogue: 0,{format_time(rel_start)},{format_time(rel_end)},ViralStyle,,0,0,0,,{word_text}\n"
 
-    ass_path = clip_video_path.replace(".mp4", ".ass")
+    ass_path = f"outputs/sub_{idx}_{job_id}.ass"
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
 
-    cmd = [
+    # Step C: Burn subtitles into the clip
+    cmd_burn = [
         "ffmpeg", "-y",
-        "-i", clip_video_path,
+        "-i", raw_output,
         "-vf", f"subtitles={ass_path}",
-        "-c:v", "libx264", "-preset", "fast",
+        "-c:v", "libx264", "-preset", "ultrafast",
         "-c:a", "copy",
-        audio_output_path
+        final_output
     ]
+    subprocess.run(cmd_burn, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    subprocess.run(cmd, check=True)
-    return audio_output_path
+    # Clean intermediate temp files immediately
+    for p in [raw_output, ass_path]:
+        if os.path.exists(p):
+            os.remove(p)
 
-# 5. Dispatch Webhook to cPanel Storage
-def send_clips_to_cpanel(job_id, clips_array):
-    webhook_url = os.environ.get("WEBHOOK_URL")
-    if not webhook_url:
-        print("[Webhook Error] WEBHOOK_URL environment variable is missing on Render!")
-        return
+    return final_output
 
-    secret_token = "YOUR_SECURE_WEBHOOK_SECRET" 
-    payload = {
-        "jobId": job_id,
-        "clips": clips_array
-    }
+# 4. Upload to cPanel & Notify Node Server
+def upload_clip_to_cpanel(file_path, clip_title, job_id):
+    cpanel_upload_url = os.environ.get("CPANEL_UPLOAD_URL", "https://yourdomain.com/upload-handler.php")
+    secret_token = os.environ.get("WEBHOOK_SECRET", "YOUR_SECURE_WEBHOOK_SECRET")
 
-    req = urllib.request.Request(
-        webhook_url, 
-        data=json.dumps(payload).encode('utf-8'),
-        method='POST'
-    )
-    req.add_header('Content-Type', 'application/json')
+    filename = os.path.basename(file_path)
+    
+    # Read file binary for multipart upload
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+
+    # Construct simple HTTP multipart payload
+    boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+    body = (
+        f"--{boundary}\r\n"
+        f"Content-Disposition: form-data; name=\"jobId\"\r\n\r\n{job_id}\r\n"
+        f"--{boundary}\r\n"
+        f"Content-Disposition: form-data; name=\"title\"\r\n\r\n{clip_title}\r\n"
+        f"--{boundary}\r\n"
+        f"Content-Disposition: form-data; name=\"video\"; filename=\"{filename}\"\r\n"
+        f"Content-Type: video/mp4\r\n\r\n"
+    ).encode('utf-8') + file_data + f"\r\n--{boundary}--\r\n".encode('utf-8')
+
+    req = urllib.request.Request(cpanel_upload_url, data=body, method='POST')
+    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
     req.add_header('X-Webhook-Secret', secret_token)
 
     try:
         with urllib.request.urlopen(req) as response:
-            res_body = response.read().decode('utf-8')
-            print(f"[Webhook Success]: {res_body}")
+            res_json = json.loads(response.read().decode('utf-8'))
+            return res_json.get("url")
     except Exception as e:
-        print(f"[Webhook Failed]: {str(e)}")
+        print(f"[Upload Error]: {e}")
+        return None
 
 # Main Execution Flow
 if __name__ == "__main__":
@@ -174,35 +206,40 @@ if __name__ == "__main__":
     target_ratio = sys.argv[3] if len(sys.argv) > 3 else "9:16"
 
     try:
-        # Step 1: Download & AI Analysis
-        source_video, clips_meta = download_and_transcribe(video_url)
+        source_video, title, transcript_result = download_and_transcribe(video_url)
         
-        print(f"[PROGRESS: 60%] Rendering clips with FFmpeg...")
+        print(f"[PROGRESS: 55%] Identifying viral highlights with Gemini...")
+        clips_meta = analyze_transcript_with_gemini(title, transcript_result)
+        
         generated_clips = []
-        
-        # Step 2: Loop and process each clip segment
-        for idx, clip in enumerate(clips_meta):
-            clip_filename = f"clip_{idx+1}_{job_id}.mp4"
-            raw_clip_path = render_clip(source_video, clip['start_sec'], clip['end_sec'], clip_filename, target_ratio)
+        for idx, clip_meta in enumerate(clips_meta[:4]): # Cap at max 4 clips to protect RAM/CPU
+            final_path = render_and_caption_clip(source_video, clip_meta, idx, job_id, target_ratio, transcript_result)
             
-            print(f"[PROGRESS: 80%] Adding subtitles to clip {idx+1}...")
-            final_clip_path = generate_subtitles_and_mix_audio(raw_clip_path, raw_clip_path.replace(".mp4", "_captioned.mp4"))
+            print(f"[PROGRESS: 90%] Uploading clip {idx+1} to cPanel storage...")
+            cpanel_url = upload_clip_to_cpanel(final_path, clip_meta.get('hook_title', f"Viral Clip #{idx+1}"), job_id)
             
-            # Construct public download link pointing to the auto-deleting stream endpoint
-            render_domain = os.environ.get("RENDER_EXTERNAL_URL", "https://save-l1w3.onrender.com")
-            public_url = f"{render_domain}/api/download/{os.path.basename(final_clip_path)}"
+            if cpanel_url:
+                generated_clips.append({
+                    "title": clip_meta.get('hook_title', f"Viral Clip #{idx+1}"),
+                    "url": cpanel_url
+                })
             
-            generated_clips.append({
-                "title": clip.get('hook_title', f"Viral Clip #{idx+1}"),
-                "url": public_url
-            })
+            # Clean up local file on Render immediately after upload
+            if os.path.exists(final_path):
+                os.remove(final_path)
 
-        print(f"[PROGRESS: 95%] Syncing completed clips to cPanel storage...")
-        
-        # Step 3: Send back results via Webhook to cPanel
-        send_clips_to_cpanel(job_id, generated_clips)
+        # Clean source video
+        if os.path.exists(source_video):
+            os.remove(source_video)
 
-        print("[PROGRESS: 100%] All clips generated successfully!")
+        print(f"[PROGRESS: 98%] Syncing completion status with Node server...")
+        # Notify local Node server
+        sync_payload = json.dumps({"jobId": job_id, "clips": generated_clips}).encode('utf-8')
+        sync_req = urllib.request.Request(f"http://localhost:{os.environ.get('PORT', '10000')}/api/internal-sync", data=sync_payload, method='POST')
+        sync_req.add_header('Content-Type', 'application/json')
+        urllib.request.urlopen(sync_req)
+
+        print("[PROGRESS: 100%] All clips generated and synced successfully!")
 
     except Exception as e:
         print(f"[Worker Fatal Error]: {str(e)}")
