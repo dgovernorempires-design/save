@@ -10,82 +10,22 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Configuration for your cPanel Webhook Archive Sync
-const CPANEL_WEBHOOK_URL = 'https://yourdomain.com/webhook.php'; // Replace with your actual cPanel webhook URL
-const WEBHOOK_SECRET = 'YOUR_SECURE_WEBHOOK_SECRET'; // Must match the secret in webhook.php
+// Configuration
+const CPANEL_WEBHOOK_URL = process.env.CPANEL_WEBHOOK_URL || 'https://yourdomain.com/webhook.php';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'YOUR_SECURE_WEBHOOK_SECRET';
 
-// Helper function to sync completed clips to cPanel
-function syncToCpanelWebhook(jobId, clips) {
-    if (!CPANEL_WEBHOOK_URL.includes('yourdomain.com')) {
-        const data = JSON.stringify({ jobId, clips });
-        const urlObj = new URL(CPANEL_WEBHOOK_URL);
-        const lib = urlObj.protocol === 'https:' ? https : http;
+// In-memory job state store
+const jobStatuses = {};
+let isProcessingActive = false; // Strict concurrency lock for 512MB RAM protection
 
-        const reqOptions = {
-            hostname: urlObj.hostname,
-            path: urlObj.pathname,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Webhook-Secret': WEBHOOK_SECRET,
-                'Content-Length': Buffer.byteLength(data)
-            }
-        };
-
-        const req = lib.request(reqOptions, (res) => {
-            let responseBody = '';
-            res.on('data', chunk => responseBody += chunk);
-            res.on('end', () => console.log(`[cPanel Sync] Job ${jobId} synced: ${responseBody}`));
-        });
-
-        req.on('error', (err) => {
-            console.error(`[cPanel Sync Error] Failed to push job ${jobId}: ${err.message}`);
-        });
-
-        req.write(data);
-        req.end();
-    }
-}
-
-// Secure Auto-Deleting Download Stream Endpoint
-app.get('/api/download/:filename', (req, res) => {
-    const filename = req.params.filename;
-    const safeFilename = path.basename(filename); // Prevent path traversal attacks
-    const filePath = path.join(__dirname, 'outputs', safeFilename);
-
-    if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: 'File already downloaded, deleted, or expired.' });
-    }
-
-    // Set headers to trigger a direct browser file download
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
-    res.setHeader('Content-Type', 'video/mp4');
-
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.pipe(res);
-
-    // Automatically delete the file from Render disk once download finishes or closes
-    fileStream.on('close', () => {
-        try {
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-                console.log(`[Cleanup] Auto-deleted downloaded file from disk: ${safeFilename}`);
-            }
-        } catch (err) {
-            console.error(`[Cleanup Error]: ${err.message}`);
-        }
-    });
-
-    fileStream.on('error', (err) => {
-        console.error(`[Stream Error]: ${err.message}`);
-        if (!res.headersSent) {
-            res.status(500).json({ error: 'Download stream failed.' });
-        }
+// Health endpoint for Render uptime monitoring
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'healthy', 
+        activeJob: isProcessingActive,
+        uptime: process.uptime() 
     });
 });
-
-// In-memory store to track job progress
-const jobStatuses = {};
 
 async function ensureYtDlp() {
     const ytDlpPath = path.join('/tmp', 'yt-dlp');
@@ -111,17 +51,26 @@ async function ensureYtDlp() {
     return ytDlpPath;
 }
 
-// 1. Endpoint to start processing
+// Start Video Processing Endpoint
 app.post('/api/process-video', async (req, res) => {
     try {
         const { videoUrl, targetRatio } = req.body;
         if (!videoUrl) return res.status(400).json({ error: 'Video URL is required' });
 
+        // Enforce single-job queue limit to prevent OOM crashes on Render
+        if (isProcessingActive) {
+            return res.status(429).json({ 
+                error: 'Server is currently processing another video. Please try again shortly.' 
+            });
+        }
+
         const jobId = 'job_' + Date.now();
-        jobStatuses[jobId] = { progress: 5, message: 'Initializing job...' };
+        jobStatuses[jobId] = { progress: 2, message: 'Job queued...', status: 'queued' };
         
         console.log(`[Job Queued] ID: ${jobId} | Target: ${videoUrl}`);
         await ensureYtDlp();
+
+        isProcessingActive = true;
 
         // Spawn Python worker
         const pythonProcess = spawn('python3', ['processor.py', videoUrl, jobId, targetRatio || '9:16']);
@@ -130,11 +79,10 @@ app.post('/api/process-video', async (req, res) => {
             const output = data.toString().trim();
             console.log(`[Python ${jobId}]: ${output}`);
 
-            // Look for progress tags sent by python e.g. [PROGRESS: 45%]
             const match = output.match(/\[PROGRESS:\s*(\d+)%\]/);
             if (match) {
                 const percent = parseInt(match[1]);
-                jobStatuses[jobId] = { progress: percent, message: output };
+                jobStatuses[jobId] = { progress: percent, message: output, status: 'processing' };
             }
         });
 
@@ -143,69 +91,40 @@ app.post('/api/process-video', async (req, res) => {
         });
 
         pythonProcess.on('close', (code) => {
+            isProcessingActive = false; // Release lock
+
             if (code === 0) {
-                const outputDir = path.join(__dirname, 'outputs');
-                let generatedClips = [];
-
-                if (fs.existsSync(outputDir)) {
-                    const files = fs.readdirSync(outputDir);
-                    // Explicitly filter for captioned files to prevent mismatch errors
-                    generatedClips = files
-                        .filter(file => file.includes(jobId) && file.endsWith('_captioned.mp4'))
-                        .map((file, index) => ({
-                            title: `Viral Short Clip #${index + 1}`,
-                            url: `${req.protocol}://${req.get('host')}/api/download/${file}`
-                        }));
+                // Check if final results were saved/reported
+                const currentJob = jobStatuses[jobId];
+                if (!currentJob || currentJob.status !== 'completed') {
+                    jobStatuses[jobId] = { 
+                        progress: 100, 
+                        message: 'Processing complete!', 
+                        status: 'completed'
+                    };
                 }
-
-                // Push completed job payload to your cPanel archive automatically
-                syncToCpanelWebhook(jobId, generatedClips);
-
+            } else {
                 jobStatuses[jobId] = { 
                     progress: 100, 
-                    message: 'Processing complete!', 
-                    status: 'completed',
-                    clips: generatedClips
+                    message: 'Processing failed during execution.', 
+                    status: 'failed' 
                 };
-            } else {
-                jobStatuses[jobId] = { progress: 100, message: 'Processing failed.', status: 'failed' };
             }
         });
 
-        return res.status(202).json({ success: true, jobId: jobId });
+        return res.status(202).json({ success: true, jobId: jobId, message: 'Processing started.' });
 
     } catch (error) {
+        isProcessingActive = false;
         console.error('Queue Error:', error);
         return res.status(500).json({ error: error.message });
     }
 });
 
-// 2. Status Endpoint with Disk Fallback Recovery
+// Job Status Endpoint
 app.get('/api/job-status/:jobId', (req, res) => {
     const { jobId } = req.params;
-    let job = jobStatuses[jobId];
-
-    // If job was wiped from memory due to server restart, check disk storage
-    if (!job) {
-        const outputDir = path.join(__dirname, 'outputs');
-        if (fs.existsSync(outputDir)) {
-            const files = fs.readdirSync(outputDir);
-            const matchingFiles = files.filter(file => file.includes(jobId) && file.endsWith('_captioned.mp4'));
-            
-            if (matchingFiles.length > 0) {
-                job = {
-                    progress: 100,
-                    message: 'Processing complete (Restored from server storage)!',
-                    status: 'completed',
-                    clips: matchingFiles.map((file, index) => ({
-                        title: `Viral Short Clip #${index + 1}`,
-                        url: `${req.protocol}://${req.get('host')}/api/download/${file}`
-                    }))
-                };
-                jobStatuses[jobId] = job; // Re-cache in memory
-            }
-        }
-    }
+    const job = jobStatuses[jobId];
 
     if (!job) {
         return res.status(404).json({ error: 'Job not found or expired.' });
@@ -214,8 +133,26 @@ app.get('/api/job-status/:jobId', (req, res) => {
     return res.json(job);
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
+// Internal webhook receiver for Python worker to sync clips directly
+app.post('/api/internal-sync', (req, res) => {
+    const { jobId, clips } = req.body;
+    if (!jobId || !clips) {
+        return res.status(400).json({ error: 'Invalid payload' });
+    }
+
+    jobStatuses[jobId] = {
+        progress: 100,
+        message: 'Processing complete!',
+        status: 'completed',
+        clips: clips
+    };
+
+    console.log(`[Sync] Job ${jobId} successfully registered ${clips.length} clips.`);
+    return res.json({ success: true });
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', async () => {
     console.log(`Backend bridge running on port ${PORT}`);
     try { await ensureYtDlp(); } catch (e) {}
 });
