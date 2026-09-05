@@ -13,12 +13,17 @@ from google import genai
 # 1. Download Video and Transcribe Once
 def download_and_transcribe(video_url):
     print(f"[PROGRESS: 10%] Downloading video source via yt-dlp...")
-    
+
     ydl_opts = {
         'format': 'bestvideo[height<=720]+bestaudio/best', # Capped at 720p to save RAM & CPU
         'merge_output_format': 'mp4',
         'outtmpl': 'downloads/source_video.mp4',
         'max_filesize': 200 * 1024 * 1024, # Limit to 200MB to protect server limits
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web']
+            }
+        }
     }
     
     os.makedirs("downloads", exist_ok=True)
@@ -154,7 +159,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         f.write(ass_content)
 
     # Step C: Burn subtitles into the clip using FFmpeg filter escape rules for file paths
-    # Replace backslashes and colon for windows/linux compatibility inside filter syntax if necessary
     safe_ass_path = ass_path.replace(":", "\\:") if os.name == 'nt' else ass_path
     
     cmd_burn = [
@@ -168,7 +172,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     
     burn_result = subprocess.run(cmd_burn, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if burn_result.returncode != 0:
-        # Fallback if subtitle filter syntax throws path error: try copying raw clip instead
         print(f"[Warning] Subtitle burn failed, using raw uncaptioned clip: {burn_result.stderr.decode('utf-8', errors='ignore')}")
         if os.path.exists(raw_output):
             os.replace(raw_output, final_output)
