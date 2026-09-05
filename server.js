@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -11,31 +10,9 @@ app.use(express.json());
 app.use(cors());
 app.use(express.static('public'));
 
-// Configuration
-const CPANEL_WEBHOOK_URL = process.env.CPANEL_WEBHOOK_URL || 'https://yourdomain.com/webhook.php';
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'YOUR_SECURE_WEBHOOK_SECRET';
-
 // In-memory job state store
 const jobStatuses = {};
-let isProcessingActive = false; // Strict concurrency lock for 512MB RAM protection
-
-// Configure multer storage for direct video file uploads
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        const dir = 'downloads';
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        cb(null, dir);
-    },
-    filename: function (req, file, cb) {
-        cb(null, 'source_video.mp4'); // Overwrites cleanly for every job
-    }
-});
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 200 * 1024 * 1024 } // 200MB limit to match RAM protection
-});
+let isProcessingActive = false;
 
 // Health endpoint for Render uptime monitoring
 app.get('/health', (req, res) => {
@@ -83,7 +60,6 @@ function spawnPythonWorker(videoUrl, jobId, targetRatio, res) {
 
     console.log(`[Job Queued] ID: ${jobId} | Target: ${videoUrl}`);
 
-    // Spawn Python processor script
     const pythonProcess = spawn('python3', ['processor.py', videoUrl, jobId, targetRatio || '9:16']);
 
     pythonProcess.stdout.on('data', (data) => {
@@ -102,7 +78,7 @@ function spawnPythonWorker(videoUrl, jobId, targetRatio, res) {
     });
 
     pythonProcess.on('close', (code) => {
-        isProcessingActive = false; // Release lock
+        isProcessingActive = false;
 
         if (code === 0) {
             const currentJob = jobStatuses[jobId];
@@ -125,7 +101,7 @@ function spawnPythonWorker(videoUrl, jobId, targetRatio, res) {
     return res.status(202).json({ success: true, jobId: jobId, message: 'Processing started successfully!' });
 }
 
-// 1. Start Video Processing via URL Endpoint
+// 1. Start Video Processing via URL
 app.post('/api/process-video', async (req, res) => {
     try {
         const { videoUrl, targetRatio } = req.body;
@@ -142,19 +118,30 @@ app.post('/api/process-video', async (req, res) => {
     }
 });
 
-// 2. Start Video Processing via Direct File Upload Endpoint
-app.post('/api/process-upload', upload.single('video'), (req, res) => {
+// 2. Start Video Processing via Native File Upload (No external dependencies like multer needed)
+app.post('/api/process-upload', (req, res) => {
     try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'No video file uploaded.' });
+        const dir = 'downloads';
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
         }
 
-        const jobId = 'job_' + Date.now();
-        const targetRatio = req.body.targetRatio || '9:16';
-        const fakeVideoUrl = "local_upload"; // Bypasses YouTube URL requirement for python script
+        const filePath = path.join(dir, 'source_video.mp4');
+        const fileStream = fs.createWriteStream(filePath);
 
-        console.log(`[Job Queued] ID: ${jobId} | Direct File Upload Received`);
-        return spawnPythonWorker(fakeVideoUrl, jobId, targetRatio, res);
+        req.pipe(fileStream);
+
+        fileStream.on('error', (err) => {
+            console.error('File write error:', err);
+            return res.status(500).json({ error: 'Failed to save uploaded file.' });
+        });
+
+        fileStream.on('finish', () => {
+            const jobId = 'job_' + Date.now();
+            const targetRatio = req.headers['x-target-ratio'] || '9:16';
+            console.log(`[Job Queued] ID: ${jobId} | Direct Native File Upload Received`);
+            return spawnPythonWorker('local_upload', jobId, targetRatio, res);
+        });
 
     } catch (error) {
         isProcessingActive = false;
