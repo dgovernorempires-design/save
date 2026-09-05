@@ -15,13 +15,12 @@ def download_and_transcribe(video_url):
     print(f"[PROGRESS: 10%] Downloading video source via yt-dlp...")
 
     ydl_opts = {
-        'format': 'best[height<=720]/best', # Safe format matching
+        'format': 'best[height<=720]/best',
         'outtmpl': 'downloads/source_video.mp4',
         'max_filesize': 200 * 1024 * 1024, # Limit to 200MB to protect server limits
-        'cookiefile': 'cookies.txt',        # Uses your uploaded cookies file
         'extractor_args': {
             'youtube': {
-                'player_client': ['web']    # Web client pairs seamlessly with cookies.txt
+                'player_client': ['mweb'] # Mobile web client bypasses desktop bot-detection walls cleanly
             }
         }
     }
