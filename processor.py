@@ -15,14 +15,13 @@ def download_and_transcribe(video_url):
     print(f"[PROGRESS: 10%] Downloading video source via yt-dlp...")
 
     ydl_opts = {
-        'format': 'bestvideo[height<=720]+bestaudio/best',
-        'merge_output_format': 'mp4',
+        'format': 'best[height<=720]/best', # Safe format matching
         'outtmpl': 'downloads/source_video.mp4',
-        'max_filesize': 200 * 1024 * 1024,
-        'cookiefile': 'cookies.txt',  # <-- This tells yt-dlp to use your authenticated session
+        'max_filesize': 200 * 1024 * 1024, # Limit to 200MB to protect server limits
+        'cookiefile': 'cookies.txt',        # Uses your uploaded cookies file
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web']
+                'player_client': ['web']    # Web client pairs seamlessly with cookies.txt
             }
         }
     }
@@ -52,7 +51,7 @@ def download_and_transcribe(video_url):
 
     print(f"[PROGRESS: 50%] Transcription complete. Analyzing transcript with Gemini AI...")
     return "downloads/source_video.mp4", title, result
-
+    
 # 2. Analyze Transcript with Gemini
 def analyze_transcript_with_gemini(title, transcript_result):
     api_key = os.environ.get("GEMINI_API_KEY")
