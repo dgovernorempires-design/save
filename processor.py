@@ -4,6 +4,7 @@ import json
 import subprocess
 import urllib.request
 import urllib.parse
+import gc
 from PIL import Image, ImageDraw, ImageFont
 import whisper
 import yt_dlp
@@ -23,28 +24,37 @@ def download_and_transcribe(video_url):
     os.makedirs("downloads", exist_ok=True)
     os.makedirs("outputs", exist_ok=True)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(video_url, download=True)
-        title = info.get('title', 'Unknown Title')
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            title = info.get('title', 'Unknown Title')
+    except Exception as e:
+        raise RuntimeError(f"Failed to download video with yt-dlp: {str(e)}")
 
     print(f"[PROGRESS: 35%] Loading Whisper model (tiny) to transcribe audio once...")
-    # Using 'tiny' model strictly to prevent OOM crashes on Render's 512MB RAM
-    model = whisper.load_model("tiny")
-    result = model.transcribe("downloads/source_video.mp4", word_timestamps=True)
-    
-    # Unload Whisper model explicitly to free up RAM immediately
-    del model
-    import gc
-    gc.collect()
+    try:
+        # Using 'tiny' model strictly to prevent OOM crashes on restricted RAM tiers
+        model = whisper.load_model("tiny")
+        result = model.transcribe("downloads/source_video.mp4", word_timestamps=True)
+    except Exception as e:
+        raise RuntimeError(f"Whisper transcription failed: {str(e)}")
+    finally:
+        # Unload Whisper model explicitly to free up RAM immediately
+        if 'model' in locals():
+            del model
+        gc.collect()
 
     print(f"[PROGRESS: 50%] Transcription complete. Analyzing transcript with Gemini AI...")
     return "downloads/source_video.mp4", title, result
 
 # 2. Analyze Transcript with Gemini
 def analyze_transcript_with_gemini(title, transcript_result):
-    client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY environment variable is missing.")
+        
+    client = genai.Client(api_key=api_key)
     
-    # Extract readable text summary/segments from transcript to keep token payload manageable
     full_text = " ".join([seg.get("text", "") for seg in transcript_result.get("segments", [])])
     truncated_text = full_text[:12000] # Safe token limit window
 
@@ -61,16 +71,15 @@ def analyze_transcript_with_gemini(title, transcript_result):
     ]
     """
     
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
-    )
-    
     try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
         clean_json = response.text.strip().replace("```json", "").replace("```", "")
         clips_data = json.loads(clean_json)
     except Exception as e:
-        print(f"[Worker Error] Failed to parse Gemini JSON: {e}")
+        print(f"[Worker Warning] Gemini parsing failed ({e}). Falling back to default split.")
         clips_data = [{"start_sec": 0, "end_sec": 45, "hook_title": "Key Highlight"}]
         
     return clips_data
@@ -100,13 +109,16 @@ def render_and_caption_clip(source_video_path, clip_meta, idx, job_id, target_ra
         "-i", source_video_path,
         "-t", str(duration),
         "-vf", vf_filter,
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", # Ultrafast preset to minimize CPU/RAM strain
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-c:a", "aac", "-b:a", "96k",
         raw_output
     ]
-    subprocess.run(cmd_cut, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    result = subprocess.run(cmd_cut, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg cutting failed: {result.stderr.decode('utf-8', errors='ignore')}")
 
-    # Step B: Filter word timestamps specifically for this clip's time range & generate ASS subtitles
+    # Step B: Generate ASS subtitles script
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -131,7 +143,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for w in segment.get("words", []):
             w_start = w["start"]
             w_end = w["end"]
-            # Check if word falls within this clip's time window
             if w_start >= start_sec and w_end <= end_sec:
                 rel_start = w_start - start_sec
                 rel_end = w_end - start_sec
@@ -142,21 +153,33 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
 
-    # Step C: Burn subtitles into the clip
+    # Step C: Burn subtitles into the clip using FFmpeg filter escape rules for file paths
+    # Replace backslashes and colon for windows/linux compatibility inside filter syntax if necessary
+    safe_ass_path = ass_path.replace(":", "\\:") if os.name == 'nt' else ass_path
+    
     cmd_burn = [
         "ffmpeg", "-y",
         "-i", raw_output,
-        "-vf", f"subtitles={ass_path}",
+        "-vf", f"subtitles='{safe_ass_path}'",
         "-c:v", "libx264", "-preset", "ultrafast",
         "-c:a", "copy",
         final_output
     ]
-    subprocess.run(cmd_burn, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    burn_result = subprocess.run(cmd_burn, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if burn_result.returncode != 0:
+        # Fallback if subtitle filter syntax throws path error: try copying raw clip instead
+        print(f"[Warning] Subtitle burn failed, using raw uncaptioned clip: {burn_result.stderr.decode('utf-8', errors='ignore')}")
+        if os.path.exists(raw_output):
+            os.replace(raw_output, final_output)
 
-    # Clean intermediate temp files immediately
+    # Clean intermediate temp files
     for p in [raw_output, ass_path]:
         if os.path.exists(p):
-            os.remove(p)
+            try:
+                os.remove(p)
+            except:
+                pass
 
     return final_output
 
@@ -166,12 +189,9 @@ def upload_clip_to_cpanel(file_path, clip_title, job_id):
     secret_token = os.environ.get("WEBHOOK_SECRET", "YOUR_SECURE_WEBHOOK_SECRET")
 
     filename = os.path.basename(file_path)
-    
-    # Read file binary for multipart upload
     with open(file_path, "rb") as f:
         file_data = f.read()
 
-    # Construct simple HTTP multipart payload
     boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
     body = (
         f"--{boundary}\r\n"
@@ -188,7 +208,7 @@ def upload_clip_to_cpanel(file_path, clip_title, job_id):
     req.add_header('X-Webhook-Secret', secret_token)
 
     try:
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             res_json = json.loads(response.read().decode('utf-8'))
             return res_json.get("url")
     except Exception as e:
@@ -212,7 +232,7 @@ if __name__ == "__main__":
         clips_meta = analyze_transcript_with_gemini(title, transcript_result)
         
         generated_clips = []
-        for idx, clip_meta in enumerate(clips_meta[:4]): # Cap at max 4 clips to protect RAM/CPU
+        for idx, clip_meta in enumerate(clips_meta[:4]):
             final_path = render_and_caption_clip(source_video, clip_meta, idx, job_id, target_ratio, transcript_result)
             
             print(f"[PROGRESS: 90%] Uploading clip {idx+1} to cPanel storage...")
@@ -224,20 +244,22 @@ if __name__ == "__main__":
                     "url": cpanel_url
                 })
             
-            # Clean up local file on Render immediately after upload
             if os.path.exists(final_path):
                 os.remove(final_path)
 
-        # Clean source video
         if os.path.exists(source_video):
             os.remove(source_video)
 
         print(f"[PROGRESS: 98%] Syncing completion status with Node server...")
-        # Notify local Node server
         sync_payload = json.dumps({"jobId": job_id, "clips": generated_clips}).encode('utf-8')
-        sync_req = urllib.request.Request(f"http://localhost:{os.environ.get('PORT', '10000')}/api/internal-sync", data=sync_payload, method='POST')
+        port = os.environ.get('PORT', '10000')
+        sync_req = urllib.request.Request(f"http://localhost:{port}/api/internal-sync", data=sync_payload, method='POST')
         sync_req.add_header('Content-Type', 'application/json')
-        urllib.request.urlopen(sync_req)
+        
+        try:
+            urllib.request.urlopen(sync_req, timeout=10)
+        except Exception as sync_err:
+            print(f"[Warning] Failed to sync internally with Node server: {sync_err}")
 
         print("[PROGRESS: 100%] All clips generated and synced successfully!")
 
