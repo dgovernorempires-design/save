@@ -15,10 +15,11 @@ def download_and_transcribe(video_url):
     print(f"[PROGRESS: 10%] Downloading video source via yt-dlp...")
 
     ydl_opts = {
-        'format': 'bestvideo[height<=720]+bestaudio/best', # Capped at 720p to save RAM & CPU
+        'format': 'bestvideo[height<=720]+bestaudio/best',
         'merge_output_format': 'mp4',
         'outtmpl': 'downloads/source_video.mp4',
-        'max_filesize': 200 * 1024 * 1024, # Limit to 200MB to protect server limits
+        'max_filesize': 200 * 1024 * 1024,
+        'cookiefile': 'cookies.txt',  # <-- This tells yt-dlp to use your authenticated session
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'web']
