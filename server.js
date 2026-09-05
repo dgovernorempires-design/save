@@ -10,6 +10,9 @@ app.use(express.json());
 app.use(cors());
 app.use(express.static('public'));
 
+// Serve the downloads folder publicly so users can download their generated clips
+app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
+
 // In-memory job state store
 const jobStatuses = {};
 let isProcessingActive = false;
@@ -118,7 +121,7 @@ app.post('/api/process-video', async (req, res) => {
     }
 });
 
-// 2. Start Video Processing via Native File Upload (No external dependencies like multer needed)
+// 2. Start Video Processing via Native File Upload
 app.post('/api/process-upload', (req, res) => {
     try {
         const dir = 'downloads';
