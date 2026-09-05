@@ -9,13 +9,13 @@ video_url = sys.argv[1]
 job_id = sys.argv[2]
 target_ratio = sys.argv[3] if len(sys.argv) > 3 else "9:16"
 
-print(f"[PROGRESS: 5%] Initializing AI Video Intelligence & Content Analyzer...", flush=True)
+print(f"[PROGRESS: 5%] Initializing lightweight video processor...", flush=True)
 
 downloads_dir = "downloads"
 os.makedirs(downloads_dir, exist_ok=True)
 source_path = os.path.join(downloads_dir, f"source_{job_id}.mp4")
 
-# 1. Acquire Source Video (URL download via yt-dlp or local upload pickup)
+# 1. Acquire Source Video
 if video_url == "local_upload":
     local_source = os.path.join(downloads_dir, "source_video.mp4")
     if os.path.exists(local_source):
@@ -28,8 +28,7 @@ else:
     yt_dlp_path = os.path.join('/tmp', 'yt-dlp')
     cmd = [
         yt_dlp_path,
-        "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv+ba/b",
-        "--extractor-args", "youtube:player_client=android",
+        "-f", "b[ext=mp4]/b",  # Grab a lighter format to save memory
         "-o", source_path,
         video_url
     ]
@@ -38,26 +37,20 @@ else:
         print(f"[Worker Fatal Error]: Download failed: {result.stderr}", flush=True)
         sys.exit(1)
 
-print(f"[PROGRESS: 35%] Analyzing transcript for emotional, spiritual, and motivational hooks...", flush=True)
-time.sleep(2) # Simulating AI transcript parsing and hook scoring
+print(f"[PROGRESS: 40%] Slicing optimal highlights...", flush=True)
 
-print(f"[PROGRESS: 50%] Slicing optimal highlights (30s, 60s, 120s segments)...", flush=True)
-
-# Define mock or calculated viral highlight timestamps (start time, duration, theme)
-# In production, AI transcript tools determine these timestamps dynamically.
+# Define quick highlight segment (testing with 1 main highlight to prevent memory timeout)
 highlights = [
-    {"title": "Motivational Peak Moment (30s)", "start": 10, "duration": 30},
-    {"title": "Spiritual Insight & Breakdown (60s)", "start": 50, "duration": 60},
-    {"title": "Deep Emotional Core (90s)", "start": 120, "duration": 90}
+    {"title": "Viral Highlight Clip (30s)", "start": 10, "duration": 30}
 ]
 
 clips_data = []
 
-# Aspect Ratio Mapping for FFmpeg crop filters
+# Ultra-lightweight crop filter to save CPU/RAM
 crop_filters = {
-    "9:16": "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-    "1:1": "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080",
-    "16:9": "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
+    "9:16": "scale=540:960:force_original_aspect_ratio=increase,crop=540:960",
+    "1:1": "scale=720:720:force_original_aspect_ratio=increase,crop=720:720",
+    "16:9": "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2"
 }
 filter_str = crop_filters.get(target_ratio, crop_filters["9:16"])
 
@@ -65,17 +58,17 @@ for idx, clip in enumerate(highlights):
     clip_filename = f"{job_id}_clip_{idx+1}.mp4"
     clip_output_path = os.path.join(downloads_dir, clip_filename)
     
-    print(f"[PROGRESS: {65 + (idx * 10)}%] Generating clip: {clip['title']} with auto-captions & framing...", flush=True)
+    print(f"[PROGRESS: 70%] Encoding clip with ultrafast profile...", flush=True)
     
-    # FFmpeg command to extract segment, reframe aspect ratio, and burn-in styling
+    # Using -preset ultrafast prevents CPU spikes and RAM crashes on Render
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-ss", str(clip["start"]),
         "-i", source_path,
         "-t", str(clip["duration"]),
         "-vf", filter_str,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "-c:a", "aac", "-b:a", "96k",
         clip_output_path
     ]
     
@@ -86,10 +79,7 @@ for idx, clip in enumerate(highlights):
             "url": f"/downloads/{clip_filename}"
         })
 
-print(f"[PROGRESS: 95%] Finalizing AI Thumbnails & rendering effects...", flush=True)
-time.sleep(1)
-
-print(f"[PROGRESS: 100%] All viral shorts generated successfully!", flush=True)
+print(f"[PROGRESS: 100%] Processing complete!", flush=True)
 
 # Sync results back to Node.js server webhook endpoint
 try:
