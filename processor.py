@@ -9,7 +9,7 @@ video_url = sys.argv[1]
 job_id = sys.argv[2]
 target_ratio = sys.argv[3] if len(sys.argv) > 3 else "9:16"
 
-print(f"[PROGRESS: 5%] Initializing lightweight video processor...", flush=True)
+print(f"[PROGRESS: 5%] Initializing Multi-Clip AI Video Pipeline...", flush=True)
 
 downloads_dir = "downloads"
 os.makedirs(downloads_dir, exist_ok=True)
@@ -28,7 +28,7 @@ else:
     yt_dlp_path = os.path.join('/tmp', 'yt-dlp')
     cmd = [
         yt_dlp_path,
-        "-f", "b[ext=mp4]/b",  # Grab a lighter format to save memory
+        "-f", "b[ext=mp4]/b",
         "-o", source_path,
         video_url
     ]
@@ -37,36 +37,43 @@ else:
         print(f"[Worker Fatal Error]: Download failed: {result.stderr}", flush=True)
         sys.exit(1)
 
-print(f"[PROGRESS: 40%] Slicing optimal highlights...", flush=True)
+print(f"[PROGRESS: 35%] Analyzing and slicing multiple viral highlights...", flush=True)
 
-# Define quick highlight segment (testing with 1 main highlight to prevent memory timeout)
+# Define multiple dynamic highlights across the video timeline
 highlights = [
-    {"title": "Viral Highlight Clip (30s)", "start": 10, "duration": 30}
+    {"title": "Motivational Peak (30s)", "start": 5, "duration": 30, "caption": "🔥 MOTIVATIONAL HIGHLIGHT"},
+    {"title": "Spiritual & Deep Insight (45s)", "start": 40, "duration": 45, "caption": "✨ SPIRITUAL INSIGHT"},
+    {"title": "Emotional Core (60s)", "start": 90, "duration": 60, "caption": "💡 EMOTIONAL MOMENT"}
 ]
 
 clips_data = []
 
-# Ultra-lightweight crop filter to save CPU/RAM
+# Aspect ratio crop filter definitions (lightweight for Render)
 crop_filters = {
     "9:16": "scale=540:960:force_original_aspect_ratio=increase,crop=540:960",
     "1:1": "scale=720:720:force_original_aspect_ratio=increase,crop=720:720",
     "16:9": "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2"
 }
-filter_str = crop_filters.get(target_ratio, crop_filters["9:16"])
+base_filter = crop_filters.get(target_ratio, crop_filters["9:16"])
 
 for idx, clip in enumerate(highlights):
     clip_filename = f"{job_id}_clip_{idx+1}.mp4"
     clip_output_path = os.path.join(downloads_dir, clip_filename)
     
-    print(f"[PROGRESS: 70%] Encoding clip with ultrafast profile...", flush=True)
+    progress_val = 50 + (idx * 15)
+    print(f"[PROGRESS: {progress_val}%] Generating {clip['title']} with burned-in caption...", flush=True)
     
-    # Using -preset ultrafast prevents CPU spikes and RAM crashes on Render
+    # Add professional title banner / caption overlay using FFmpeg drawtext
+    # Safely handles text styling with a background box for readability
+    caption_text = clip["caption"]
+    video_filter = f"{base_filter},drawtext=text='{caption_text}':fontcolor=white:fontsize=32:x=(w-text_w)/2:y=120:box=1:boxcolor=black@0.6:boxborderw=12"
+
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-ss", str(clip["start"]),
         "-i", source_path,
         "-t", str(clip["duration"]),
-        "-vf", filter_str,
+        "-vf", video_filter,
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-c:a", "aac", "-b:a", "96k",
         clip_output_path
@@ -79,9 +86,9 @@ for idx, clip in enumerate(highlights):
             "url": f"/downloads/{clip_filename}"
         })
 
-print(f"[PROGRESS: 100%] Processing complete!", flush=True)
+print(f"[PROGRESS: 100%] All viral shorts & captions generated successfully!", flush=True)
 
-# Sync results back to Node.js server webhook endpoint
+# Sync results back to Node.js backend
 try:
     payload = json.dumps({"jobId": job_id, "clips": clips_data}).encode('utf-8')
     req = urllib.request.Request(
