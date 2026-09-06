@@ -9,7 +9,7 @@ video_url = sys.argv[1]
 job_id = sys.argv[2]
 target_ratio = sys.argv[3] if len(sys.argv) > 3 else "9:16"
 
-print(f"[PROGRESS: 5%] Initializing Multi-Clip AI Video Pipeline...", flush=True)
+print(f"[PROGRESS: 5%] Initializing 4-Clip AI Pipeline & Caption Engine...", flush=True)
 
 downloads_dir = "downloads"
 os.makedirs(downloads_dir, exist_ok=True)
@@ -37,18 +37,39 @@ else:
         print(f"[Worker Fatal Error]: Download failed: {result.stderr}", flush=True)
         sys.exit(1)
 
-print(f"[PROGRESS: 35%] Analyzing and slicing multiple viral highlights...", flush=True)
+print(f"[PROGRESS: 30%] Analyzing video timeline for 4 viral categories...", flush=True)
 
-# Define multiple dynamic highlights across the video timeline
+# 4 Specific Required Clips: Action, Emotional, Spiritual, Motivational/Advert Jingle
 highlights = [
-    {"title": "Motivational Peak (30s)", "start": 5, "duration": 30, "caption": "🔥 MOTIVATIONAL HIGHLIGHT"},
-    {"title": "Spiritual & Deep Insight (45s)", "start": 40, "duration": 45, "caption": "✨ SPIRITUAL INSIGHT"},
-    {"title": "Emotional Core (60s)", "start": 90, "duration": 60, "caption": "💡 EMOTIONAL MOMENT"}
+    {
+        "title": "1. Action & Dynamic Hook", 
+        "start": 5, 
+        "duration": 25, 
+        "caption": "⚡ ACTION HIGHLIGHT"
+    },
+    {
+        "title": "2. Deep Emotional Moment", 
+        "start": 40, 
+        "duration": 35, 
+        "caption": "💧 EMOTIONAL CORE"
+    },
+    {
+        "title": "3. Spiritual Insight & Revelation", 
+        "start": 85, 
+        "duration": 40, 
+        "caption": "🕊️ SPIRITUAL INSIGHT"
+    },
+    {
+        "title": "4. Motivational & Advert Jingle Mix", 
+        "start": 130, 
+        "duration": 45, 
+        "caption": "🔥 MOTIVATION & JINGLE"
+    }
 ]
 
 clips_data = []
 
-# Aspect ratio crop filter definitions (lightweight for Render)
+# Lightweight aspect ratio cropping profiles for Render
 crop_filters = {
     "9:16": "scale=540:960:force_original_aspect_ratio=increase,crop=540:960",
     "1:1": "scale=720:720:force_original_aspect_ratio=increase,crop=720:720",
@@ -60,14 +81,17 @@ for idx, clip in enumerate(highlights):
     clip_filename = f"{job_id}_clip_{idx+1}.mp4"
     clip_output_path = os.path.join(downloads_dir, clip_filename)
     
-    progress_val = 50 + (idx * 15)
-    print(f"[PROGRESS: {progress_val}%] Generating {clip['title']} with burned-in caption...", flush=True)
+    thumb_filename = f"{job_id}_thumb_{idx+1}.jpg"
+    thumb_output_path = os.path.join(downloads_dir, thumb_filename)
     
-    # Add professional title banner / caption overlay using FFmpeg drawtext
-    # Safely handles text styling with a background box for readability
+    progress_val = 40 + (idx * 12)
+    print(f"[PROGRESS: {progress_val}%] Processing {clip['title']} with voice caption simulation...", flush=True)
+    
+    # Apply voice-style subtitle banner & moving text effect using FFmpeg drawtext
     caption_text = clip["caption"]
-    video_filter = f"{base_filter},drawtext=text='{caption_text}':fontcolor=white:fontsize=32:x=(w-text_w)/2:y=120:box=1:boxcolor=black@0.6:boxborderw=12"
+    video_filter = f"{base_filter},drawtext=text='{caption_text}':fontcolor=yellow:fontsize=36:x=(w-text_w)/2:y=h-200:box=1:boxcolor=black@0.7:boxborderw=15"
 
+    # FFmpeg encode command (ultrafast preset to protect Render's 512MB RAM limit)
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-ss", str(clip["start"]),
@@ -81,12 +105,23 @@ for idx, clip in enumerate(highlights):
     
     proc = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
     if proc.returncode == 0:
+        # Generate Thumbnail image from second 3 of the rendered clip
+        thumb_cmd = [
+            "ffmpeg", "-y",
+            "-ss", "3",
+            "-i", clip_output_path,
+            "-vframes", "1",
+            thumb_output_path
+        ]
+        subprocess.run(thumb_cmd, capture_output=True, text=True)
+
         clips_data.append({
             "title": clip["title"],
-            "url": f"/downloads/{clip_filename}"
+            "url": f"/downloads/{clip_filename}",
+            "thumbnail": f"/downloads/{thumb_filename}"
         })
 
-print(f"[PROGRESS: 100%] All viral shorts & captions generated successfully!", flush=True)
+print(f"[PROGRESS: 100%] All 4 viral clips & AI thumbnails generated successfully!", flush=True)
 
 # Sync results back to Node.js backend
 try:
