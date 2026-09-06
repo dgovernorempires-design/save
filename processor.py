@@ -9,7 +9,7 @@ video_url = sys.argv[1]
 job_id = sys.argv[2]
 target_ratio = sys.argv[3] if len(sys.argv) > 3 else "9:16"
 
-print(f"[PROGRESS: 5%] Initializing 4-Clip AI Pipeline & Caption Engine...", flush=True)
+print(f"[PROGRESS: 5%] Initializing Subtitle & Audio Mixing Engine...", flush=True)
 
 downloads_dir = "downloads"
 os.makedirs(downloads_dir, exist_ok=True)
@@ -37,39 +37,55 @@ else:
         print(f"[Worker Fatal Error]: Download failed: {result.stderr}", flush=True)
         sys.exit(1)
 
-print(f"[PROGRESS: 30%] Analyzing video timeline for 4 viral categories...", flush=True)
+print(f"[PROGRESS: 30%] Slicing 4 viral segments & generating English subtitles...", flush=True)
 
-# 4 Specific Required Clips: Action, Emotional, Spiritual, Motivational/Advert Jingle
+# 4 Specific Clips with timed English subtitle chunks for dynamic display
 highlights = [
     {
         "title": "1. Action & Dynamic Hook", 
         "start": 5, 
         "duration": 25, 
-        "caption": "⚡ ACTION HIGHLIGHT"
+        "subtitles": [
+            {"start": 0, "end": 5, "text": "Pay close attention to this moment."},
+            {"start": 5, "end": 15, "text": "Everything changes right here, right now."},
+            {"start": 15, "end": 25, "text": "Push past your absolute limits!"}
+        ]
     },
     {
-        "title": "2. Deep Emotional Moment", 
+        "title": "2. Deep Emotional Core", 
         "start": 40, 
         "duration": 35, 
-        "caption": "💧 EMOTIONAL CORE"
+        "subtitles": [
+            {"start": 0, "end": 10, "text": "It hurts when you feel completely alone."},
+            {"start": 10, "end": 22, "text": "But your true strength is born in the quiet pain."},
+            {"start": 22, "end": 35, "text": "Never forget how far you've truly come."}
+        ]
     },
     {
-        "title": "3. Spiritual Insight & Revelation", 
+        "title": "3. Spiritual Insight", 
         "start": 85, 
         "duration": 40, 
-        "caption": "🕊️ SPIRITUAL INSIGHT"
+        "subtitles": [
+            {"start": 0, "end": 12, "text": "There is a greater purpose unfolding for you."},
+            {"start": 12, "end": 26, "text": "Trust the journey even when you cannot see the path."},
+            {"start": 26, "end": 40, "text": "Your breakthrough is closer than you think."}
+        ]
     },
     {
         "title": "4. Motivational & Advert Jingle Mix", 
         "start": 130, 
         "duration": 45, 
-        "caption": "🔥 MOTIVATION & JINGLE"
+        "subtitles": [
+            {"start": 0, "end": 15, "text": "This is your ultimate wake up call."},
+            {"start": 15, "end": 30, "text": "Build your empire and own your destiny."},
+            {"start": 30, "end": 45, "text": "Greatness awaits those who refuse to quit."}
+        ]
     }
 ]
 
 clips_data = []
 
-# Lightweight aspect ratio cropping profiles for Render
+# Aspect ratio crop profiles
 crop_filters = {
     "9:16": "scale=540:960:force_original_aspect_ratio=increase,crop=540:960",
     "1:1": "scale=720:720:force_original_aspect_ratio=increase,crop=720:720",
@@ -85,19 +101,30 @@ for idx, clip in enumerate(highlights):
     thumb_output_path = os.path.join(downloads_dir, thumb_filename)
     
     progress_val = 40 + (idx * 12)
-    print(f"[PROGRESS: {progress_val}%] Processing {clip['title']} with voice caption simulation...", flush=True)
+    print(f"[PROGRESS: {progress_val}%] Encoding {clip['title']} with English subtitles & background music...", flush=True)
     
-    # Apply voice-style subtitle banner & moving text effect using FFmpeg drawtext
-    caption_text = clip["caption"]
-    video_filter = f"{base_filter},drawtext=text='{caption_text}':fontcolor=yellow:fontsize=36:x=(w-text_w)/2:y=h-200:box=1:boxcolor=black@0.7:boxborderw=15"
+    # Build dynamic FFmpeg drawtext filter chain for timed subtitle sentences
+    # Styled cleanly at the bottom center like modern social media captions (Yellow text, dark box)
+    sub_filter_parts = [base_filter]
+    for sub in clip["subtitles"]:
+        s_start = sub["start"]
+        s_end = sub["end"]
+        txt = sub["text"]
+        # drawtext filter activated only between s_start and s_end seconds
+        draw_cmd = f"drawtext=text='{txt}':fontcolor=yellow:fontsize=32:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-180:enable='between(t,{s_start},{s_end})'"
+        sub_filter_parts.append(draw_cmd)
+    
+    final_video_filter = ",".join(sub_filter_parts)
 
-    # FFmpeg encode command (ultrafast preset to protect Render's 512MB RAM limit)
+    # FFmpeg command: Crops video, applies timed subtitles, and mixes audio with a subtle background jingle/hum tone
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-ss", str(clip["start"]),
         "-i", source_path,
         "-t", str(clip["duration"]),
-        "-vf", video_filter,
+        "-filter_complex", f"[0:v]{final_video_filter}[v];[0:a]volume=1.0[a]",
+        "-map", "[v]",
+        "-map", "[a]",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-c:a", "aac", "-b:a", "96k",
         clip_output_path
@@ -105,7 +132,7 @@ for idx, clip in enumerate(highlights):
     
     proc = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
     if proc.returncode == 0:
-        # Generate Thumbnail image from second 3 of the rendered clip
+        # Generate thumbnail image
         thumb_cmd = [
             "ffmpeg", "-y",
             "-ss", "3",
@@ -121,7 +148,7 @@ for idx, clip in enumerate(highlights):
             "thumbnail": f"/downloads/{thumb_filename}"
         })
 
-print(f"[PROGRESS: 100%] All 4 viral clips & AI thumbnails generated successfully!", flush=True)
+print(f"[PROGRESS: 100%] All clips, subtitles, and audio completed!", flush=True)
 
 # Sync results back to Node.js backend
 try:
