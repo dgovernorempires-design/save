@@ -30,7 +30,13 @@ if video_url == "local_upload":
 else:
     print(f"[PROGRESS: 20%] Downloading source video via yt-dlp...", flush=True)
     yt_dlp_path = os.path.join('/tmp', 'yt-dlp')
-    cmd = [yt_dlp_path, "-f", "b[ext=mp4]/b", "-o", source_path, video_url]
+    cmd = [
+        yt_dlp_path,
+        "--extractor-args", "youtube:player_client=android,web",
+        "-f", "b[ext=mp4]/b",
+        "-o", source_path,
+        video_url
+    ]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         print(f"[Worker Fatal Error]: Download failed: {res.stderr}", flush=True)
